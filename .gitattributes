@@ -1,0 +1,3 @@
+*.BIN binary
+*.bin binary
+*.SCR text eol=crlf

@@ -1,0 +1,5 @@
+# Example only: changes the Setup title "Setup, Version 2.01.00 (3230)"
+# to "Setup, Version 2.01.00 (MOD1)". Harmless and cosmetic. It shows the format
+# and proves the image still boots with fixed checksums.
+# "(3230)" is at F000:DE98 = FA40:3A98 (Setup module); the old bytes are verified.
+FA40:3A99  33 32 33 30  ->  4D 4F 44 31
