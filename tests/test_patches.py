@@ -32,20 +32,12 @@ def check(cond, msg):
 
 # ---------------------------------------------------------------- burn-in
 def burnin(image):
-    """Where does POST go from F000:474C with AH = 0 (keyboard input port forced to 0)?"""
+    """Where does POST go from F000:474C with AH = 0 (keyboard input port forced to 0)?
+    The original falls through to F000:4753 (set the burn-in marker and reboot);
+    the fix jumps to F000:4769 (the normal error / F1 prompt)."""
     m = Machine(image)
-    m.write(0x415, b"\x00")
-    for stop in (0x4753, 0x4769):
-        pass
-    m.uc.hook_add(__import__("unicorn").UC_HOOK_CODE,
-                  lambda uc, a, s, u: (_ for _ in ()).throw(StopEmu("burnin" if a == 0xF4753 else "prompt"))
-                  if a in (0xF4753, 0xF4769) else None, begin=0xF4753, end=0xF4769)
-    try:
-        m.run_until(0xF000, 0x474C, 0xF000, 0x0000, ax=0x0000, ds=0x40, max_insns=1000)
-    except StopEmu as e:
-        return str(e).split(":")[0].split()[-1] if "burnin" not in str(e) and "prompt" not in str(e) \
-            else ("burnin" if "burnin" in str(e) else "prompt")
-    return "?"
+    cs, ip = m.run_steps(0xF000, 0x474C, 2, ax=0x0000, ds=0x40)   # cmp ah,0 ; branch
+    return {0x4753: "burnin", 0x4769: "prompt"}.get(ip, "%04X:%04X" % (cs, ip))
 
 
 check(burnin(ORIGINAL) == "burnin", "original: AH=0 at F000:474C enters burn-in mode")

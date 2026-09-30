@@ -7,7 +7,7 @@ EXE tools (Free Pascal i8086-msdos) against the emulated NCR hardware.
 """
 import struct
 
-from emu import Machine, StopEmu, CF, ZF
+from emu import Machine, StopEmu, CF
 
 PSP_SEG = 0x1000
 TOP_SEG = 0x9FC0
@@ -28,12 +28,9 @@ class DosMachine(Machine):
         self.unknown = []
         self.install_rom_vectors()
         self.set_vector(0x21, 0, 0)
-        # BIOS data: tick counter must advance for timeouts; bump it from PIT reads.
-        self._pit_reads = 0
-
-    def port_in(self, port, size):
-        v = super().port_in(port, size)
-        return v
+        # The BIOS tick counter must advance for timeouts; run_exe bumps it
+        # every 64 IDE status reads.
+        self._status_reads = 0
 
     def _tick(self):
         t = self.mem_word(0x46C)
@@ -146,8 +143,8 @@ class DosMachine(Machine):
 
         def inp(port, size, _orig=orig):
             if port == 0x1F7:
-                self._pit_reads += 1
-                if self._pit_reads % 64 == 0:
+                self._status_reads += 1
+                if self._status_reads % 64 == 0:
                     self._tick()
             return _orig(port, size)
         self.ide.inp = inp

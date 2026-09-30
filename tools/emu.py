@@ -399,7 +399,6 @@ class Machine:
         self.stubs = {0x10: self._int10, 0x16: self._int16, 0x15: self._int15}
         self.ints = []
         self.rom_writes = []
-        self.steps = 0
         self.uc.hook_add(UC_HOOK_INSN, self._in, None, 1, 0, UC_X86_INS_IN)
         self.uc.hook_add(UC_HOOK_INSN, self._out, None, 1, 0, UC_X86_INS_OUT)
         self.uc.hook_add(UC_HOOK_INTR, self._intr)
@@ -585,6 +584,16 @@ class Machine:
 
     def stack(self, ss=0x0000, sp=0x7000):
         self.set_regs(ss=ss, sp=sp)
+
+    def run_steps(self, seg, off, n, **regs):
+        """Execute exactly n instructions from seg:off; return (cs, ip) after them."""
+        if "sp" not in regs:
+            self.stack()
+        self.set_regs(**regs)
+        self.uc.reg_write(UC_X86_REG_CS, seg)
+        self.uc.reg_write(UC_X86_REG_EIP, off)
+        self.uc.emu_start(seg * 16 + off, 0xFFFFFFFF, count=n)
+        return self.reg("cs"), self.uc.reg_read(UC_X86_REG_IP)
 
     def near_call(self, seg, off, max_insns=20_000_000, **regs):
         """Call seg:off as a near subroutine; returns when it RETs."""

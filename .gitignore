@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
+*.tmp
+# Free Pascal build intermediates and the Windows test build
 *.o
 *.a
 *.ppu
 userhdd/sim/
+# Build output: only the flashable image is kept in git
+build/*
+!build/NCR3230-203-improved.BIN

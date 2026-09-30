@@ -1,3 +1,7 @@
+* text=auto
 *.BIN binary
 *.bin binary
+*.exe binary
+*.pdf binary
+*.bat text eol=crlf
 *.SCR text eol=crlf
