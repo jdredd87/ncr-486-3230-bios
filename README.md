@@ -35,10 +35,10 @@ Inside the F000 segment:
 Types index the table at F000:E401 (16 bytes each).
 * **0**: not installed. POST skips hard-disk init completely (F000:90D9).
 * **1**: user-defined. Geometry lives in **CMOS 72h–7Ch** and is copied into the table at POST (F000:3C58). `tools/userhdd.py` recreates the lost USERHDD.EXE (it writes a DOS `DEBUG` script).
-* **2**: automatic. POST sends IDENTIFY (ECh) and writes C's geometry into slot 2 (E411). For drive D, Setup stores "2" as 3, which uses slot 3 (E421). Cylinders are copied raw, not clamped to 1024.
+* **2**: automatic. POST sends IDENTIFY (ECh) and writes C's geometry into slot 2 (E411). For drive D, Setup stores "2" as 3, which uses slot 3 (E421). Drives reporting more than 1024 cylinders, 16 heads or 63 sectors are fitted to at most 1024/16/63 (F000:92D3), so big drives work at up to about 504 MB. (An earlier version of this README wrongly said cylinders were copied raw; emulator runs confirmed the fitting.)
 * **4–47**: fixed types. Useful ones: **33 = 1024/16/63 (504 MB)**, 24 = 702/16/63.
 
-**Why POST can seem to hang.** All IDE waits are loop-count timeouts, but some are long. After reset, POST calls INT 13h AH=10h ("drive ready") up to 31,000 times with a delay each time (F000:9150). An ATAPI CD-ROM, or an empty IDE port, sitting where a drive type is configured never reports ready, so POST can sit there for minutes. Setup/F1 is only reachable *after* this point (F000:478A error prompt, or F1 in the keyboard buffer at F000:47C5).
+**Why POST can seem to hang.** All IDE waits are loop-count timeouts, but some are long. After reset, POST calls INT 13h AH=10h ("drive ready") up to 31,000 times with a delay each time (F000:9150). An ATAPI CD-ROM, or an empty IDE port, sitting where a drive type is configured never reports ready, so POST can sit there a long time. Measured in the emulator (tests/hdinit.py): about 32 s for a CD-ROM where a drive type is set, and about 16 s when a type is set but nothing is connected. `ide_atapi_skip` and `ide_nodrive_fast` fix both. Setup/F1 is only reachable *after* this point (F000:478A error prompt, or F1 in the keyboard buffer at F000:47C5).
 
 **Burn-in trap.** If the keyboard interface test fails with code 3 and the clock/data lines aren't idle-high (F000:3E85), POST zeroes 40:12. Then at F000:474C it sets 40:72 = 5678h and reboots into factory burn-in mode. `patches/no_burnin.patch` removes this.
 
@@ -46,11 +46,11 @@ Types index the table at F000:E401 (16 bytes each).
 
 **No CMOS battery.** At F000:2081 POST checks RTC register D (VRT), the checksum at CMOS 2Eh/2Fh over 10h–2Dh, and the NCR checksum at 7Eh/7Fh over 44h–47h. If any check fails, F000:217F loads defaults: 10h–47h are cleared, then base memory is 640 KB, A: = 1.44 MB (10h = 40h), no hard disks, 44h = E5h and 47h = 4Eh (bit 6 = boot from floppy). RTC register B is sanitized at F000:2258 and register A is set to 26h at F000:2BBA. Time-of-day conversion (F000:8192) range-checks every field. So a battery-less boot is safe, but it always stops at "Battery Power Lost … Press <F1> or <ENTER>".
 
-`patches/no_battery_no_hdd.patch` = no_burnin + a timed prompt: new routine at F000:9F00 (beep, wait ≤ 3 s or keypress, continue). F1 still enters Setup via the type-ahead check at F000:47C5. Prompts for other errors are unchanged.
+`patches/battery_prompt.patch` (formerly part of no_battery_no_hdd.patch) adds a timed prompt: new routine at F000:9F00 (beep, wait ≤ 3 s or keypress, continue). F1 still enters Setup via the type-ahead check at F000:47C5. Prompts for other errors are unchanged.
 
 ## Free space for patches (zero-filled)
 
-(F000:9F00–9F23 is now used by no_battery_no_hdd.patch.)
+(Now used by patches: F000:9F00–9F2F battery_prompt, 9F30–9F6F ide_nodrive_fast, A000–A13F ide_atapi_skip.)
 
 
 | F000 range   | Bytes | Notes |
@@ -65,6 +65,31 @@ Types index the table at F000:E401 (16 bytes each).
 | 0006-00A5    | 160   | Purpose not yet confirmed; avoid for now |
 
 Never move the IBM fixed entry points (E05B, E2C3, E6F2, E739, E82E, E987, EC59, EF57, EFC7, EFD2, F065, F0A4, F841, F84D, F859, FA6E, FE6E, FEA5, FEF3, FF23, FF53, FF54, FFF0). DOS-era software jumps to them directly.
+
+## Improved ROM
+
+`python tools/build_rom.py --all` builds **build/NCR3230-203-improved.BIN** from the original plus these patches (sources in `patches/src/*.asm`, assembled with NASM by `tools/asm2patch.py`):
+
+| Patch | Fixes |
+|---|---|
+| `no_burnin` | A certain keyboard failure no longer reboots into factory burn-in mode |
+| `battery_prompt` | "Battery Power Lost" style prompts continue after ~3 s instead of waiting forever (F1 still works) |
+| `ide_nodrive_fast` | Drive type set but nothing connected: ~16 s -> ~0.05 s |
+| `ide_atapi_skip` | CD-ROM where a drive type is set: skipped in ~1 s with a note, instead of ~32 s plus a phantom hard disk |
+| `setup_year` | Setup accepts two-digit years 00-79 as 2000-2079 |
+
+Each patch checks the original bytes it replaces. `python tests/test_patches.py` runs the real ROM code in the emulator (`tools/emu.py`, Unicorn) for every patch, original vs improved. These are emulator results; none of it has run on the real board yet.
+
+## USERHDD.EXE
+
+`userhdd/dos/userhdd.exe` replaces NCR's lost utility (source `userhdd/userhdd.pas`, Free Pascal i8086-msdos). Run it from DOS on the NCR:
+
+    USERHDD                 show settings, then enter a geometry
+    USERHDD 1024 16 63 /C   set type-1 geometry and make C: type 1
+    USERHDD /DETECT /C      read the geometry from the IDE drive (use /SLAVE for the slave)
+    USERHDD /SHOW           show only
+
+It needs a working CMOS battery (the settings live in CMOS). `tests/test_userhdd.py` and `tests/test_userhdd_dos.py` check its output against the BIOS's own POST and Setup code.
 
 ## Tools
 
