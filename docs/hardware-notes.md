@@ -31,6 +31,18 @@ A 256 KB direct-mapped cache on a 486 needs:
 - BRDY#/RDY#, KEN#, BLAST#
 - from the chipset: SRAM chip-select, output-enable and write-enables, plus the tag data lines
 
+### Building a module: conclusions so far
+
+- **Adapter approach.** Use a card-edge socket that mates with P1 on a small PCB carrying the SRAMs directly. First measure P1's finger pitch (across 10 fingers), the count per side, board thickness and the key notch position.
+- **No standard module to reuse.** There is no industry-standard 486 cache module. COAST ("cache on a stick", 160-pin) belongs to the Pentium era: pipelined-burst SRAM on a 64-bit bus, which won't work with this chipset's asynchronous 32-bit cache. 486 boards used loose DIP SRAMs.
+- **Parts.**
+  - Data: 8 × 32K×8 fast 5 V asynchronous SRAM for 256 KB. 15–20 ns is enough at 33 MHz. New parts include the CY7C199 and IS61C256; period UM61256/W24257-class chips also work.
+  - Tag: one fast SRAM, 32K×8 for 256 KB. Add a dirty-bit chip if the chipset runs write-back.
+- **Two banks.** A 256 KB 486 cache is usually two interleaved 32-bit banks (32K×64 in total). Each bank needs its own output enable or chip select onto the CPU's single 32-bit data bus.
+- **Smart "ASYNCH 32Kx64" modules** (eBay 335241730026) are most likely Pentium-era cache sticks despite "486" in the title. Their pinout is unknown and designed for a Pentium chipset, so they're not wireable to P1. They're useful only as a donor of 32K×8 async SRAMs, if that's what they carry.
+- **The PicoMEM can't emulate L2.** It sits on the 8-bit ISA bus, which never sees CPU memory cycles, and responds in hundreds of ns against the 15–20 ns a cache needs.
+- The deciding input is still the **P1 pinout**. Especially important are the fingers that go to the chipset instead of the CPU: SRAM chip select, output enable, write enables and tag lines.
+
 ## CPU upgrades
 
 From the BIOS:
