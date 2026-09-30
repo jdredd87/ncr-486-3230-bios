@@ -40,6 +40,7 @@ REGS = {"ax": UC_X86_REG_AX, "bx": UC_X86_REG_BX, "cx": UC_X86_REG_CX, "dx": UC_
 CF, ZF, IF = 0x0001, 0x0040, 0x0200
 SENTINEL_FAR = (0x0000, 0x0500)       # far return lands here
 SENTINEL_NEAR = 0xFFF8                # near return offset in the routine's segment
+SENTINEL_NEAR_F000 = 0xA3F8           # F000: use free space, not the ROM date at FFF5
 
 
 class StopEmu(Exception):
@@ -145,7 +146,8 @@ class IdeChannel:
         self.buf, self.pos = b"", 0
         if err:
             self.error[n] = err
-            self.status[n] = (0x40 if isinstance(self.cur(), AtaDisk) else 0x00) | 0x01
+            # ATA disks keep DRDY and DSC (seek complete) with ERR: 51h, as real drives do.
+            self.status[n] = (0x50 if isinstance(self.cur(), AtaDisk) else 0x00) | 0x01
         else:
             self.error[n] = 0
             self.status[n] = 0x50 if isinstance(self.cur(), AtaDisk) else 0x40
@@ -388,6 +390,8 @@ class Machine:
         self.ide = IdeChannel(self)
         self.port80 = []
         self.ports_log = []
+        self.log_ports = False
+        self.io_count = 0
         self.screen = []
         self.keys = []
         self.pit = 0
@@ -450,12 +454,20 @@ class Machine:
     # -- ports
     def _in(self, uc, port, size, user):
         v = self.port_in(port, size)
-        self.ports_log.append(("in", port, v))
+        self.io_count += 1
+        if self.log_ports:
+            self.ports_log.append(("in", port, v))
         return v
 
     def _out(self, uc, port, size, value, user):
-        self.ports_log.append(("out", port, value))
+        self.io_count += 1
+        if self.log_ports:
+            self.ports_log.append(("out", port, value))
         self.port_out(port, size, value)
+
+    def est_seconds(self):
+        """Rough real-hardware time: ~1 us per ISA I/O access dominates these loops."""
+        return self.io_count * 1.0e-6
 
     def port_in(self, port, size):
         if port == 0x71:
@@ -579,11 +591,12 @@ class Machine:
         if "sp" not in regs:
             self.stack()
         self.set_regs(**regs)
-        self.write(seg * 16 + SENTINEL_NEAR, b"\xF4")
+        ret = SENTINEL_NEAR_F000 if seg == 0xF000 else SENTINEL_NEAR
+        self.write(seg * 16 + ret, b"\xF4")
         sp = (self.reg("sp") - 2) & 0xFFFF
-        self.write(self.reg("ss") * 16 + sp, struct.pack("<H", SENTINEL_NEAR))
+        self.write(self.reg("ss") * 16 + sp, struct.pack("<H", ret))
         self.set_regs(sp=sp)
-        self._run(seg, off, seg * 16 + SENTINEL_NEAR, max_insns)
+        self._run(seg, off, seg * 16 + ret, max_insns)
 
     def far_call(self, seg, off, max_insns=20_000_000, **regs):
         if "sp" not in regs:
@@ -615,6 +628,17 @@ class Machine:
 
     def cf(self):
         return bool(self.reg("flags") & CF)
+
+    def zf(self):
+        return bool(self.reg("flags") & ZF)
+
+    def tick_at(self, linear):
+        """Advance the BIOS tick count (40:6C) each time `linear` executes."""
+        def hook(uc, address, size, user):
+            t = self.mem_word(0x46C)
+            self.write(0x46C, struct.pack("<H", (t + 1) & 0xFFFF))
+            self.ticks_advanced = getattr(self, "ticks_advanced", 0) + 1
+        self.uc.hook_add(UC_HOOK_CODE, hook, begin=linear, end=linear)
 
 
 def cmos_checksum(cmos):
