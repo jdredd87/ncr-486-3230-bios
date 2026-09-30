@@ -1,4 +1,6 @@
-# NCR 486 BIOS 517-0000672 v2.03.00 (U19): reverse-engineering workspace
+# NCR 3230 (486) BIOS 517-0000672 v2.03.00 (U19): reverse-engineering workspace
+
+This is the system board BIOS of the NCR System 3230 (Setup identifies itself as "Setup, Version 2.01.00 (3230)").
 
 The original image `NCR-BIOS-517-0000672-VER2.03.00-U19.BIN` is never modified.
 Every build goes to `build/`.
