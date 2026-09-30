@@ -125,6 +125,10 @@ The original bytes must match, or nothing is written. `patches/example_setup_tit
 
 Keep the original chip, or a verified dump of it, and have a way to reprogram it (an EPROM/flash programmer). A bad BIOS will not POST. Test cosmetic patches first.
 
+## Hardware notes
+
+L2 cache behaviour, the P1 edge connector, CPU upgrade options and the probe worksheet: see [docs/hardware-notes.md](docs/hardware-notes.md).
+
 ## Copyright
 
 The ROM image, the images derived from it (`split/`, `build/`) and the disassembly listings (`out/`) contain NCR Corporation and Cirrus Logic firmware. They are kept here for personal repair and preservation of this machine; this repository is private. The tools and patch files are original work.

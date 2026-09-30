@@ -1,0 +1,526 @@
+<title>P1 Connector Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a bench worksheet. Probe log on the left, socket map and lookup
+   pinned on the right (stacked on phones). Palette taken from the board:
+   solder-mask green, silkscreen white, gold edge fingers. */
+:root {
+  --bg: #eef2ec;
+  --panel: #f8faf6;
+  --ink: #16281e;
+  --muted: #56685c;
+  --line: #cdd8cf;
+  --gold: #a67c12;
+  --gold-soft: #f3e6bf;
+  --focus: #1f6fb2;
+  --g-addr: #2f6db5;  --g-addr-bg: #dde9f7;
+  --g-data: #b4581b;  --g-data-bg: #f8e3d3;
+  --g-ctrl: #6d49a8;  --g-ctrl-bg: #e9e1f5;
+  --g-vcc:  #b3261e;  --g-vcc-bg: #f7dcd9;
+  --g-gnd:  #3b4a40;  --g-gnd-bg: #dfe5e0;
+  --g-nc:   #8a948d;  --g-nc-bg: #f0f2ef;
+  --ok: #2e7d4f;
+  --warn: #9a6a00;
+  --bad: #b3261e;
+  --display: "Barlow Condensed", "Arial Narrow", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1a13; --panel: #14241a; --ink: #e8efe9; --muted: #9db0a2; --line: #2a3f31;
+    --gold: #e0b44a; --gold-soft: #3a3016; --focus: #6fb0ea;
+    --g-addr: #8db9ee; --g-addr-bg: #1c2e45;
+    --g-data: #f0a26a; --g-data-bg: #402716;
+    --g-ctrl: #c3a6f0; --g-ctrl-bg: #2f2345;
+    --g-vcc: #f28b82; --g-vcc-bg: #45201d;
+    --g-gnd: #c7d3ca; --g-gnd-bg: #26332b;
+    --g-nc: #7d8a81; --g-nc-bg: #18241c;
+    --ok: #6fcf97; --warn: #e8c15a; --bad: #f28b82;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1a13; --panel: #14241a; --ink: #e8efe9; --muted: #9db0a2; --line: #2a3f31;
+  --gold: #e0b44a; --gold-soft: #3a3016; --focus: #6fb0ea;
+  --g-addr: #8db9ee; --g-addr-bg: #1c2e45;
+  --g-data: #f0a26a; --g-data-bg: #402716;
+  --g-ctrl: #c3a6f0; --g-ctrl-bg: #2f2345;
+  --g-vcc: #f28b82; --g-vcc-bg: #45201d;
+  --g-gnd: #c7d3ca; --g-gnd-bg: #26332b;
+  --g-nc: #7d8a81; --g-nc-bg: #18241c;
+  --ok: #6fcf97; --warn: #e8c15a; --bad: #f28b82;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.5 var(--body); }
+.wrap { max-width: 1320px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 48px; }
+h1, h2, h3 { font-family: var(--display); letter-spacing: .01em; text-wrap: balance; margin: 0; line-height: 1.1; }
+h1 { font-size: 2.3rem; font-weight: 700; }
+h2 { font-size: 1.45rem; font-weight: 600; }
+h3 { font-size: 1.1rem; font-weight: 600; }
+p { margin: 0; }
+.eyebrow { font: 600 .75rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--gold); }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); }
+code, .pin { font-family: var(--mono); font-size: .92em; }
+button, input, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+header.top { display: flex; flex-wrap: wrap; gap: 12px 32px; align-items: end; justify-content: space-between; padding-block: 8px 20px; border-bottom: 2px solid var(--gold); }
+header.top .lede { max-width: 62ch; display: grid; gap: 6px; }
+.status { display: flex; gap: 10px; align-items: center; font: 500 .85rem var(--mono); color: var(--muted); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); }
+
+.grid-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 480px); gap: 28px; margin-top: 22px; align-items: start; }
+@media (max-width: 1000px) { .grid-main { grid-template-columns: minmax(0, 1fr); } }
+.side-col { display: grid; gap: 22px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 12px); }
+@media (max-width: 1000px) { .side-col { position: static; } }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 16px; display: grid; gap: 12px; min-width: 0; }
+
+details.how summary { cursor: pointer; font-family: var(--display); font-size: 1.2rem; font-weight: 600; }
+details.how ol { margin: 10px 0 0; padding-left: 1.3em; display: grid; gap: 6px; max-width: 70ch; }
+.setup { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: end; }
+.field { display: grid; gap: 4px; }
+.field label { font: 600 .72rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+input[type=number], input[type=text], select { background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; min-width: 0; }
+input[type=number] { width: 7ch; font-family: var(--mono); }
+
+.progress { display: flex; flex-wrap: wrap; gap: 8px 18px; font: 500 .85rem var(--mono); }
+.bar { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden; flex: 1 1 200px; align-self: center; }
+.bar > span { display: block; height: 100%; background: var(--gold); width: 0; transition: width .3s; }
+
+.tabs { display: flex; gap: 6px; }
+.tab { border: 1px solid var(--line); background: var(--panel); padding: 6px 14px; border-radius: 4px 4px 0 0; cursor: pointer; font-family: var(--display); font-size: 1.05rem; font-weight: 600; }
+.tab[aria-selected=true] { background: var(--gold-soft); border-color: var(--gold); }
+
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 0 6px 6px 6px; background: var(--panel); }
+table.log { border-collapse: collapse; width: 100%; min-width: 640px; font-size: .92rem; }
+.log th { text-align: left; font: 600 .72rem var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 8px; border-bottom: 1px solid var(--line); background: var(--panel); position: sticky; top: 0; }
+.log td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.log tr.active td { background: var(--gold-soft); }
+.log td.num { font: 600 .9rem var(--mono); color: var(--gold); width: 3.2em; }
+.log input.hole { width: 6ch; font-family: var(--mono); text-transform: uppercase; }
+.log input.note { width: 100%; min-width: 14ch; }
+.log select { max-width: 11em; }
+.sig { font: 600 .9rem var(--mono); white-space: nowrap; }
+.chip { display: inline-block; font: 600 .72rem var(--mono); padding: 2px 7px; border-radius: 10px; white-space: nowrap; }
+.chip.addr { color: var(--g-addr); background: var(--g-addr-bg); }
+.chip.data { color: var(--g-data); background: var(--g-data-bg); }
+.chip.ctrl { color: var(--g-ctrl); background: var(--g-ctrl-bg); }
+.chip.vcc { color: var(--g-vcc); background: var(--g-vcc-bg); }
+.chip.gnd { color: var(--g-gnd); background: var(--g-gnd-bg); }
+.chip.nc { color: var(--g-nc); background: var(--g-nc-bg); }
+.chip.chipref { color: var(--gold); background: var(--gold-soft); }
+.err { color: var(--bad); font-size: .8rem; }
+.saved { font: 500 .72rem var(--mono); color: var(--ok); opacity: 0; transition: opacity .3s; }
+.saved.on { opacity: 1; }
+
+/* socket map */
+.map-wrap { overflow-x: auto; }
+.socket { display: grid; grid-template-columns: 1.6em repeat(17, minmax(22px, 1fr)); gap: 2px; font-family: var(--mono); min-width: 440px; }
+.socket .hdr { font-size: .65rem; color: var(--muted); display: grid; place-items: center; }
+.hole { aspect-ratio: 1; border-radius: 3px; display: grid; place-items: center; font-size: .56rem; font-weight: 600; line-height: 1; cursor: pointer; border: 1px solid transparent; padding: 0; overflow: hidden; }
+.hole.empty { cursor: default; background: transparent; }
+.hole.addr { background: var(--g-addr-bg); color: var(--g-addr); }
+.hole.data { background: var(--g-data-bg); color: var(--g-data); }
+.hole.ctrl { background: var(--g-ctrl-bg); color: var(--g-ctrl); }
+.hole.vcc { background: var(--g-vcc-bg); color: var(--g-vcc); }
+.hole.gnd { background: var(--g-gnd-bg); color: var(--g-gnd); }
+.hole.nc { background: var(--g-nc-bg); color: var(--g-nc); }
+.hole.found { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+.hole.sel { outline: 2px solid var(--focus); outline-offset: 1px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: .8rem; }
+.legend .chip { font-size: .7rem; }
+
+.lookup-out { font-size: .92rem; display: grid; gap: 4px; min-height: 2.6em; }
+.checklist { display: grid; gap: 10px; }
+.checklist .row { display: flex; flex-wrap: wrap; gap: 4px; }
+.sigpill { font: 600 .7rem var(--mono); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); }
+.sigpill.hit { border-color: var(--ok); color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.btn { border: 1px solid var(--gold); background: var(--gold-soft); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: 600; }
+.notice { font-size: .85rem; padding: 8px 10px; border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="lede">
+      <span class="eyebrow">NCR 3230 · CPU card · edge connector P1</span>
+      <h1>P1 Connector Map</h1>
+      <p class="muted">Probe each gold finger with a meter on continuity, find which 486 socket hole it reaches, and log it here. When every finger is done, P1's pinout falls out, and with it what an L2 cache module has to connect to.</p>
+    </div>
+    <div class="status" id="status"><span class="dot" id="statusDot"></span><span id="statusText">Connecting storage…</span></div>
+  </header>
+
+  <div class="grid-main">
+    <main style="display:grid; gap:22px; min-width:0">
+      <details class="how card" id="howto" open>
+        <summary>How to probe</summary>
+        <ol>
+          <li><b>Power off and unplug.</b> Take the card out if that makes the fingers easier to reach.</li>
+          <li><b>Lift the ZIF lever and remove the CPU.</b> You probe the empty socket holes, so the meter touches the same metal the CPU pins would.</li>
+          <li><b>Find which way the socket runs.</b> Touch one probe to a known ground (a mounting screw or the power connector's black wire) and step along each outer edge of the socket. The edge where holes 8 to 12 all beep, with more at 6 and 14, is <b>row S</b>. Count from the end where the 6th hole is the first to beep: that is <b>S1</b>. Row A is the opposite edge. Check the result on the map.</li>
+          <li><b>Set the meter to continuity (beep).</b> Put one probe on finger 1 and sweep the other along the socket holes until it beeps. Type that hole into the log (for example <code>Q14</code>).</li>
+          <li>If nothing in the socket beeps, test the finger against ground and against a 5&nbsp;V hole (<code>B7</code>). If it's neither, it goes to another chip: follow the trace and note where it ends, for example <code>U41 pin 52</code>.</li>
+          <li><b>Number the fingers</b> from the left end (the barcode label side) with the chips facing you: that is side <b>A</b>. Side <b>B</b> is the back, numbered from the same end.</li>
+        </ol>
+      </details>
+
+      <section class="card">
+        <h2>Connector</h2>
+        <div class="setup">
+          <div class="field"><label for="countA">Fingers on side A (chip side)</label><input type="number" id="countA" min="0" max="120" inputmode="numeric"></div>
+          <div class="field"><label for="countB">Fingers on side B (back)</label><input type="number" id="countB" min="0" max="120" inputmode="numeric"></div>
+          <p class="muted" style="max-width:40ch">Count the gold fingers on each side, including the short section past the key notch. Your photo shows roughly 60–70 on the chip side.</p>
+        </div>
+        <div class="progress"><span id="progText">0 of 0 fingers logged</span><div class="bar" aria-hidden="true"><span id="progBar"></span></div></div>
+      </section>
+
+      <section style="display:grid; gap:0; min-width:0">
+        <div class="tabs" role="tablist">
+          <button class="tab" role="tab" id="tabA" aria-selected="true" data-side="A">Side A</button>
+          <button class="tab" role="tab" id="tabB" aria-selected="false" data-side="B">Side B</button>
+        </div>
+        <div class="table-wrap">
+          <table class="log">
+            <thead><tr><th>Finger</th><th>Socket hole</th><th>Signal</th><th>Or it goes to</th><th>Note</th><th></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <p class="muted" id="emptyHint" style="padding:14px 4px">Enter the finger counts above and a row appears for each finger.</p>
+      </section>
+    </main>
+
+    <aside class="side-col">
+      <section class="card">
+        <h2>Lookup</h2>
+        <div class="field"><label for="lookup">Hole or signal</label><input type="text" id="lookup" placeholder="Q14, A12, BRDY, GND…" autocomplete="off"></div>
+        <div class="lookup-out" id="lookupOut"><span class="muted">Type a socket hole like <code>Q14</code> or a signal like <code>BRDY</code>.</span></div>
+      </section>
+
+      <section class="card">
+        <div style="display:flex; justify-content:space-between; gap:10px; align-items:baseline; flex-wrap:wrap">
+          <h2>486 socket, 168 holes</h2>
+          <span class="muted" style="font-size:.8rem">Tap a hole to put it in the active row</span>
+        </div>
+        <div class="legend">
+          <span class="chip addr">Address</span><span class="chip data">Data</span><span class="chip ctrl">Control</span><span class="chip vcc">+5 V</span><span class="chip gnd">Ground</span><span class="chip nc">Unused</span><span class="chip chipref">Gold ring: found on P1</span>
+        </div>
+        <div class="map-wrap"><div class="socket" id="socket" role="grid" aria-label="486 socket holes by row and column"></div></div>
+        <p class="muted" style="font-size:.8rem">Laid out by row letter and column number, not as a photo of the socket. Row S carries grounds at S6 and S8–S12, which is how step 3 finds it. Pinout from Intel's 168-pin PGA cross-reference; pins marked "DX2 only" are unused by a plain 486DX-33.</p>
+      </section>
+
+      <section class="card">
+        <div style="display:flex; justify-content:space-between; gap:10px; align-items:baseline; flex-wrap:wrap">
+          <h2>What a cache needs</h2>
+          <button class="btn" id="copyBtn" type="button">Copy summary</button>
+        </div>
+        <div class="checklist" id="checklist"></div>
+        <p class="muted" style="font-size:.8rem" id="copyNote">Green means the signal has turned up on some finger. Fingers that go to other chips are usually the cache controls: SRAM chip select, output enable, write enables and the tag lines.</p>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  // ---- 486 168-pin PGA, from Intel's pin cross-reference (Table 7) ----
+  const ADDR = { A2:"Q14",A3:"R15",A4:"S16",A5:"Q12",A6:"S15",A7:"Q13",A8:"R13",A9:"Q11",A10:"S13",A11:"R12",A12:"S7",A13:"Q10",A14:"S5",A15:"R7",A16:"Q9",A17:"Q3",A18:"R5",A19:"Q4",A20:"Q8",A21:"Q5",A22:"Q7",A23:"S3",A24:"Q6",A25:"R2",A26:"S2",A27:"S1",A28:"R1",A29:"P2",A30:"P3",A31:"Q1" };
+  const DATA = { D0:"P1",D1:"N2",D2:"N1",D3:"H2",D4:"M3",D5:"J2",D6:"L2",D7:"L3",D8:"F2",D9:"D1",D10:"E3",D11:"C1",D12:"G3",D13:"D2",D14:"K3",D15:"F3",D16:"J3",D17:"D3",D18:"C2",D19:"B1",D20:"A1",D21:"B2",D22:"A2",D23:"A4",D24:"A6",D25:"B6",D26:"C7",D27:"C6",D28:"C8",D29:"A8",D30:"C9",D31:"B8" };
+  const CTRL = { "A20M#":"D15","ADS#":"S17","AHOLD":"A17","BE0#":"K15","BE1#":"J16","BE2#":"J15","BE3#":"F17","BLAST#":"R16","BOFF#":"D17","BRDY#":"H15","BREQ":"Q15","BS16#":"C17","BS8#":"D16","CLK":"C3","D/C#":"M15","DP0":"N3","DP1":"F1","DP2":"H3","DP3":"A5","EADS#":"B17","FERR#":"C14","FLUSH#":"C15","HLDA":"P15","HOLD":"E15","IGNNE#":"A15","INTR":"A16","KEN#":"F15","LOCK#":"N15","M/IO#":"N16","NMI":"B15","PCD":"J17","PCHK#":"Q17","PLOCK#":"Q16","PWT":"L15","RDY#":"F16","RESERVED#":"C11","RESET":"C16","SMI#":"B10","SMIACT#":"C12","SRESET":"C10","STPCLK#":"G15","TCK":"A3","TDI":"A14","TDO":"B16","TMS":"B14","W/R#":"N17" };
+  const DX2_ONLY = new Set(["SMI#","SMIACT#","SRESET","STPCLK#","TCK","TDI","TDO","TMS"]);
+  const VCC = "B7 B9 B11 C4 C5 E2 E16 G2 G16 H16 J1 K2 K16 L16 M2 M16 P16 R3 R6 R8 R9 R10 R11 R14".split(" ");
+  const VSS = "A7 A9 A11 B3 B4 B5 E1 E17 G1 G17 H1 H17 K1 K17 L1 L17 M1 M17 P17 Q2 R4 S6 S8 S9 S10 S11 S12 S14".split(" ");
+  const NC = { C13:"NC (do not connect)", S4:"NC (DX4: VOLDET)" };
+  const INC = { A10:"INC (DX4: INV)", A12:"INC (DX4: HITM#)", A13:"INC", B12:"INC (DX4: CACHE#)", B13:"INC (DX4: WB/WT#)", R17:"INC (DX4: CLKMUL)" };
+
+  const HOLES = {}; // hole -> {name, group}
+  for (const [n,h] of Object.entries(ADDR)) HOLES[h] = {name:n, group:"addr"};
+  for (const [n,h] of Object.entries(DATA)) HOLES[h] = {name:n, group:"data"};
+  for (const [n,h] of Object.entries(CTRL)) HOLES[h] = {name:n, group:"ctrl"};
+  for (const h of VCC) HOLES[h] = {name:"+5V", group:"vcc"};
+  for (const h of VSS) HOLES[h] = {name:"GND", group:"gnd"};
+  for (const [h,d] of Object.entries(NC)) HOLES[h] = {name:"NC", group:"nc", desc:d};
+  for (const [h,d] of Object.entries(INC)) HOLES[h] = {name:"INC", group:"nc", desc:d};
+  const SIG2HOLE = Object.assign({}, ADDR, DATA, CTRL);
+  const ROWS = "ABCDEFGHJKLMNPQRS".split("");
+  const count = Object.keys(HOLES).length; // 168
+  if (count !== 168) console.error("pin table has", count, "entries");
+
+  const CACHE_GROUPS = [
+    { title: "Index address, A2–A17 (256 KB direct-mapped)", sigs: range("A", 2, 17) },
+    { title: "Tag address, A18–A31", sigs: range("A", 18, 31) },
+    { title: "Data, D0–D31", sigs: range("D", 0, 31) },
+    { title: "Bus control", sigs: ["ADS#","W/R#","M/IO#","D/C#","BE0#","BE1#","BE2#","BE3#","CLK","BLAST#"] },
+    { title: "Cache handshake", sigs: ["BRDY#","RDY#","KEN#","PCD","PWT","FLUSH#","AHOLD","EADS#","HOLD","HLDA","BOFF#"] },
+  ];
+  function range(p, a, b) { const r = []; for (let i = a; i <= b; i++) r.push(p + i); return r; }
+
+  // ---- state ----
+  const state = { countA: 0, countB: 0, fingers: {}, side: "A", active: null };
+  let db = null, store = "none";
+  const $ = (id) => document.getElementById(id);
+  const fid = (side, n) => side + "-" + String(n).padStart(2, "0");
+  function normHole(s) { return (s || "").toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+  function holeInfo(h) { return HOLES[normHole(h)] || null; }
+
+  // ---- storage: artifact db, else this browser only ----
+  const LS = "p1map.v1";
+  function lsLoad() { try { return JSON.parse(localStorage.getItem(LS) || "null"); } catch (e) { return null; } }
+  function lsSave() { try { localStorage.setItem(LS, JSON.stringify({countA: state.countA, countB: state.countB, fingers: state.fingers})); } catch (e) {} }
+  function setStatus(kind, text) { $("statusDot").className = "dot " + kind; $("statusText").textContent = text; }
+
+  async function saveFinger(id) {
+    const f = state.fingers[id];
+    if (store === "db") {
+      try { await db.doc("fingers/" + id).set(Object.assign({}, f, {t: Date.now()})); flashSaved(id); }
+      catch (e) { setStatus("warn", "Couldn't save " + id + ": " + (e && e.code || "error")); }
+    } else { lsSave(); flashSaved(id); }
+  }
+  let cfgTimer = null;
+  function saveConfig() {
+    clearTimeout(cfgTimer);
+    cfgTimer = setTimeout(async () => {
+      if (store === "db") {
+        try { await db.doc("probe/config").set({countA: state.countA, countB: state.countB, t: Date.now()}); }
+        catch (e) { setStatus("warn", "Couldn't save the finger counts: " + (e && e.code || "error")); }
+      } else lsSave();
+    }, 500);
+  }
+  function flashSaved(id) {
+    const el = document.querySelector('[data-saved="' + id + '"]');
+    if (!el) return;
+    el.classList.add("on"); setTimeout(() => el.classList.remove("on"), 1200);
+  }
+
+  // ---- rendering ----
+  function kindOf(f) {
+    if (!f) return "";
+    if (f.hole) return "cpu";
+    return f.kind || "";
+  }
+  function signalCell(f) {
+    const k = kindOf(f);
+    if (k === "cpu") {
+      const i = holeInfo(f.hole);
+      if (!i) return '<span class="err">No hole ' + esc(f.hole) + '</span>';
+      const extra = DX2_ONLY.has(i.name) ? ' <span class="muted" style="font-size:.75rem">DX2 only</span>' : (i.desc ? ' <span class="muted" style="font-size:.75rem">' + esc(i.desc) + '</span>' : "");
+      return '<span class="chip ' + i.group + '">' + esc(i.name) + '</span>' + extra;
+    }
+    if (k === "gnd") return '<span class="chip gnd">GND</span>';
+    if (k === "vcc") return '<span class="chip vcc">+5V</span>';
+    if (k === "chip") return '<span class="chip chipref">other chip</span>';
+    if (k === "none") return '<span class="chip nc">no connection</span>';
+    return '<span class="muted">–</span>';
+  }
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+  function renderRows() {
+    const tb = $("rows");
+    const n = state.side === "A" ? state.countA : state.countB;
+    $("emptyHint").hidden = n > 0;
+    const focusedId = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.id;
+    const focusedCls = document.activeElement && document.activeElement.className;
+    if (tb.childElementCount !== n || tb.dataset.side !== state.side) {
+      tb.dataset.side = state.side;
+      let html = "";
+      for (let i = 1; i <= n; i++) {
+        const id = fid(state.side, i);
+        html += '<tr data-row="' + id + '">' +
+          '<td class="num">' + state.side + i + '</td>' +
+          '<td><input class="hole" type="text" id="h-' + id + '" data-id="' + id + '" maxlength="4" autocomplete="off" aria-label="Socket hole for finger ' + state.side + i + '"></td>' +
+          '<td class="sigcell" id="s-' + id + '"></td>' +
+          '<td><select class="kind" id="k-' + id + '" data-id="' + id + '" aria-label="Other connection for finger ' + state.side + i + '">' +
+            '<option value="">–</option><option value="gnd">Ground</option><option value="vcc">+5 V</option><option value="chip">Another chip</option><option value="none">No connection</option></select></td>' +
+          '<td><input class="note" type="text" id="n-' + id + '" data-id="' + id + '" placeholder="e.g. U41 pin 52" autocomplete="off" aria-label="Note for finger ' + state.side + i + '"></td>' +
+          '<td><span class="saved" data-saved="' + id + '">saved</span></td></tr>';
+      }
+      tb.innerHTML = html;
+    }
+    for (let i = 1; i <= n; i++) {
+      const id = fid(state.side, i), f = state.fingers[id] || {};
+      const h = $("h-" + id), k = $("k-" + id), no = $("n-" + id);
+      if (!(focusedId === id && /hole/.test(focusedCls))) h.value = f.hole || "";
+      if (!(focusedId === id && /kind/.test(focusedCls))) k.value = f.hole ? "" : (f.kind || "");
+      k.disabled = !!f.hole;
+      if (!(focusedId === id && /note/.test(focusedCls))) no.value = f.note || "";
+      $("s-" + id).innerHTML = signalCell(f);
+      h.closest("tr").classList.toggle("active", state.active === id);
+    }
+  }
+
+  function renderSocket() {
+    const s = $("socket");
+    if (!s.childElementCount) {
+      let html = '<div class="hdr"></div>';
+      for (let c = 1; c <= 17; c++) html += '<div class="hdr">' + c + '</div>';
+      for (const r of ROWS) {
+        html += '<div class="hdr">' + r + '</div>';
+        for (let c = 1; c <= 17; c++) {
+          const h = r + c, i = HOLES[h];
+          if (!i) { html += '<div class="hole empty" aria-hidden="true"></div>'; continue; }
+          const label = i.group === "addr" || i.group === "data" ? i.name : (i.group === "vcc" ? "+" : i.group === "gnd" ? "⏚" : i.group === "nc" ? "·" : i.name.replace("#","").slice(0, 4));
+          html += '<button class="hole ' + i.group + '" data-hole="' + h + '" title="' + h + ': ' + esc(i.desc || i.name) + '" aria-label="Hole ' + h + ', ' + esc(i.desc || i.name) + '">' + esc(label) + '</button>';
+        }
+      }
+      s.innerHTML = html;
+    }
+    const found = new Set(Object.values(state.fingers).filter(f => f && f.hole).map(f => normHole(f.hole)));
+    s.querySelectorAll(".hole[data-hole]").forEach(b => b.classList.toggle("found", found.has(b.dataset.hole)));
+  }
+
+  function foundSignals() {
+    const m = {};
+    for (const [id, f] of Object.entries(state.fingers)) {
+      const i = f && f.hole ? holeInfo(f.hole) : null;
+      if (i) (m[i.name] = m[i.name] || []).push(id.replace("-0", "").replace("-", ""));
+    }
+    return m;
+  }
+  function renderChecklist() {
+    const m = foundSignals();
+    let html = "";
+    for (const g of CACHE_GROUPS) {
+      const hits = g.sigs.filter(s => m[s]).length;
+      html += '<div><h3>' + esc(g.title) + ' <span class="muted mono" style="font-size:.8rem">' + hits + '/' + g.sigs.length + '</span></h3><div class="row">' +
+        g.sigs.map(s => '<span class="sigpill' + (m[s] ? " hit" : "") + '" title="' + (m[s] ? "finger " + m[s].join(", ") : "not found yet") + '">' + esc(s) + '</span>').join("") + '</div></div>';
+    }
+    $("checklist").innerHTML = html;
+  }
+  function renderProgress() {
+    const total = state.countA + state.countB;
+    let done = 0;
+    for (const side of ["A", "B"]) {
+      const n = side === "A" ? state.countA : state.countB;
+      for (let i = 1; i <= n; i++) if (kindOf(state.fingers[fid(side, i)])) done++;
+    }
+    $("progText").textContent = done + " of " + total + " fingers logged";
+    $("progBar").style.width = total ? (100 * done / total) + "%" : "0";
+  }
+  function renderAll() {
+    if (document.activeElement !== $("countA")) $("countA").value = state.countA || "";
+    if (document.activeElement !== $("countB")) $("countB").value = state.countB || "";
+    renderRows(); renderSocket(); renderChecklist(); renderProgress();
+  }
+
+  // ---- lookup ----
+  function lookup(q) {
+    const out = $("lookupOut");
+    const raw = (q || "").trim().toUpperCase();
+    if (!raw) { out.innerHTML = '<span class="muted">Type a socket hole like <code>Q14</code> or a signal like <code>BRDY</code>.</span>'; return; }
+    const lines = [];
+    const h = normHole(raw);
+    if (HOLES[h]) { const i = HOLES[h]; lines.push('Hole <b class="mono">' + h + '</b> = <span class="chip ' + i.group + '">' + esc(i.name) + '</span>' + (i.desc ? ' <span class="muted">' + esc(i.desc) + '</span>' : "") + (DX2_ONLY.has(i.name) ? ' <span class="muted">DX2 only</span>' : "")); }
+    if (raw === "GND" || raw === "VSS") lines.push('Ground holes: <span class="mono">' + VSS.join(" ") + '</span>');
+    if (raw === "VCC" || raw === "5V" || raw === "+5V") lines.push('+5 V holes: <span class="mono">' + VCC.join(" ") + '</span>');
+    const key = raw.replace(/#$/, "");
+    const sigs = Object.keys(SIG2HOLE).filter(s => s === raw || s.replace("#", "") === key || (key.length >= 3 && s.replace("#", "").startsWith(key)));
+    for (const s of sigs.slice(0, 8)) { const i = HOLES[SIG2HOLE[s]]; lines.push('Signal <span class="chip ' + i.group + '">' + esc(s) + '</span> is at hole <b class="mono">' + SIG2HOLE[s] + '</b>'); }
+    const fs = foundSignals();
+    for (const s of sigs.slice(0, 8)) if (fs[s]) lines.push('<span style="color:var(--ok)">' + esc(s) + ' found on finger ' + fs[s].join(", ") + '</span>');
+    out.innerHTML = lines.length ? lines.join("<br>") : '<span class="err">No hole or signal called "' + esc(raw) + '". Rows skip I and O; columns run 1–17.</span>';
+    document.querySelectorAll(".hole.sel").forEach(b => b.classList.remove("sel"));
+    const target = HOLES[h] ? h : (sigs.length === 1 ? SIG2HOLE[sigs[0]] : null);
+    if (target) { const b = document.querySelector('.hole[data-hole="' + target + '"]'); if (b) b.classList.add("sel"); }
+  }
+
+  // ---- events ----
+  function setFinger(id, patch) {
+    const [side, num] = id.split("-");
+    const f = Object.assign({side, n: +num, hole: "", kind: "", note: ""}, state.fingers[id] || {}, patch);
+    state.fingers[id] = f;
+    renderAll();
+    saveFinger(id);
+  }
+  $("rows").addEventListener("focusin", (e) => { const id = e.target.dataset.id; if (id) { state.active = id; renderRows(); } });
+  $("rows").addEventListener("change", (e) => {
+    const id = e.target.dataset.id; if (!id) return;
+    if (e.target.classList.contains("hole")) {
+      const v = normHole(e.target.value);
+      setFinger(id, {hole: v, kind: v ? "cpu" : ""});
+      if (v) lookup(v);
+    } else if (e.target.classList.contains("kind")) {
+      setFinger(id, {kind: e.target.value});
+    } else if (e.target.classList.contains("note")) {
+      setFinger(id, {note: e.target.value.trim()});
+    }
+  });
+  $("rows").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target.classList.contains("hole")) {
+      e.preventDefault(); e.target.blur();
+      const [side, num] = e.target.dataset.id.split("-");
+      const next = $("h-" + fid(side, +num + 1)); if (next) next.focus();
+    }
+  });
+  $("socket").addEventListener("click", (e) => {
+    const b = e.target.closest(".hole[data-hole]"); if (!b) return;
+    const h = b.dataset.hole;
+    $("lookup").value = h; lookup(h);
+    if (state.active && state.active.startsWith(state.side)) {
+      const inp = $("h-" + state.active);
+      if (inp) { setFinger(state.active, {hole: h, kind: "cpu"}); }
+    }
+  });
+  $("lookup").addEventListener("input", (e) => lookup(e.target.value));
+  for (const side of ["A", "B"]) {
+    $("count" + side).addEventListener("change", (e) => {
+      const v = Math.max(0, Math.min(120, parseInt(e.target.value, 10) || 0));
+      state["count" + side] = v; renderAll(); saveConfig();
+    });
+  }
+  document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+    state.side = t.dataset.side; state.active = null;
+    document.querySelectorAll(".tab").forEach(x => x.setAttribute("aria-selected", String(x === t)));
+    renderRows();
+  }));
+  $("copyBtn").addEventListener("click", () => {
+    const lines = ["P1 connector map (NCR 3230)", "finger\thole\tsignal\tother\tnote"];
+    for (const side of ["A", "B"]) {
+      const n = side === "A" ? state.countA : state.countB;
+      for (let i = 1; i <= n; i++) {
+        const f = state.fingers[fid(side, i)] || {};
+        const info = f.hole ? holeInfo(f.hole) : null;
+        lines.push([side + i, f.hole || "", info ? info.name : "", f.hole ? "" : (f.kind || ""), f.note || ""].join("\t"));
+      }
+    }
+    const text = lines.join("\n");
+    const done = () => { $("copyNote").textContent = "Copied " + (lines.length - 2) + " rows. Paste them anywhere, or just tell Claude you're done: it can read this log directly."; };
+    try { navigator.clipboard.writeText(text).then(done, () => fallbackCopy(text, done)); } catch (e) { fallbackCopy(text, done); }
+  });
+  function fallbackCopy(text, done) {
+    const ta = document.createElement("textarea"); ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand("copy"); done(); } catch (e) { $("copyNote").textContent = "Copy isn't available here. Select the rows in the log instead."; }
+    ta.remove();
+  }
+
+  // ---- start ----
+  renderAll();
+  const local = lsLoad();
+  function useLocal(why) {
+    store = "local";
+    if (local) { state.countA = local.countA || 0; state.countB = local.countB || 0; state.fingers = local.fingers || {}; }
+    setStatus("warn", why);
+    renderAll();
+  }
+  const use = window.claude && window.claude.use ? window.claude.use("db") : Promise.resolve(null);
+  Promise.resolve(use).then((ns) => {
+    if (!ns) { useLocal("Saving in this browser only"); return; }
+    db = ns; store = "db";
+    setStatus("ok", "Saving to the shared log");
+    db.doc("probe/config").onSnapshot((snap) => {
+      if (snap.exists) { const d = snap.data(); state.countA = d.countA || 0; state.countB = d.countB || 0; renderAll(); }
+    }, (e) => setStatus("warn", "Log unavailable (" + e.code + ")"));
+    db.collection("fingers").onSnapshot((qs) => {
+      const m = {};
+      qs.docs.forEach(d => { m[d.id] = d.data(); });
+      state.fingers = m; renderAll();
+    }, (e) => setStatus("warn", "Log unavailable (" + e.code + ")"));
+  }, () => useLocal("Saving in this browser only"));
+})();
+</script>
