@@ -17,9 +17,9 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | `hdd_auto` | Hard disks work like a mid-90s BIOS. When the settings are lost (no battery), C: and D: default to **Automatic** instead of "Not installed", the defaults are saved with valid checksums, and the disk init is no longer skipped after a settings loss. A drive set to Automatic that isn't connected is skipped quietly, without "Disk controller failure", a countdown or a phantom drive. So with no battery, an IDE hard disk is simply found at every boot. |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079 |
 | `fancy_boot` | A blue boot screen with a typed-in banner, the credits and a "Press <F1> for SETUP" hint. Errors print in red, warnings in yellow, and list items get bullets. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). The credits also appear on Setup's title line. With the screen switched off, POST looks exactly as before. |
-| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has six pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), a CMOS viewer, and **Hard disk setup** (see below). It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
+| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has six pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), a CMOS viewer, and **Hard disk setup** (see below). It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. It also brings **large-disk (LBA) support**: Automatic disks over 504 MB, up to 8.4 GB through normal INT 13h and up to 128 GB through the INT 13h extensions (see below). If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 233 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 263 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
 
 **On the real machine (2026-10-03):** the first improved build POSTs and boots, and `ide_atapi_skip` is confirmed. With a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on. The countdown, boot screen, Setup option and Tools are tested only in the emulator so far.
 
@@ -39,6 +39,18 @@ To change the settings, press **F10** at the end of POST and choose **7  Hard di
 | S | Save to CMOS (types, the type-1 table and the checksums). Enter then restarts so POST uses the new settings. |
 
 Use the user type only for a disk that must keep the geometry it was partitioned with on another PC. Without a CMOS battery the settings are lost at power-off and the page says so; Automatic still works then, because it is the default.
+
+### Disks over 504 MB
+
+The stock BIOS addresses disks by cylinder/head/sector exactly as the drive does, which ends at 1024/16/63 = 504 MB; anything bigger was cut down to that. Now a hard disk set to **Automatic** that holds more than 504 MB and supports LBA (every IDE disk from about 1994 on, and CompactFlash cards) gets large-disk mode, the way a 1995 Phoenix or Award BIOS does it:
+
+- **Up to 8.4 GB for DOS and FDISK.** The BIOS shows the disk with the standard "LBA-assisted" geometry (32, 64, 128 or 255 heads, 63 sectors, up to 1024 cylinders) and translates every access into an LBA sector number. A 2 GB disk appears as 1023/64/63.
+- **The whole disk, up to 128 GB,** through the INT 13h extensions (functions 41h–48h). Windows 95 OSR2/98, MS-DOS 7.1 and FAT32 use these for big partitions.
+- **The standard translated parameter tables** (INT 41h/46h, A0h signature) for software that reads them.
+
+Tools → Drives marks such a disk "LBA". Smaller disks, disks without LBA, and drives with a fixed or user type stay on the stock code, exactly as before. No base memory is used: the tables sit in the shadowed BIOS segment, as the stock auto-detect's do. If the BIOS isn't shadowed, large-disk mode stays off.
+
+**A disk that already holds data partitioned with the old 504 MB limit** keeps that layout if you set it to the user type 1024/16/63 in Hard disk setup. Switching an existing disk between the two layouts makes its partitions unreadable until you switch back, as on any BIOS.
 
 ### Booting from CD-ROM
 
@@ -60,7 +72,7 @@ If anything fails (no drive, no disc, a data CD), it prints why and carries on w
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `a6c671379fb89f2ef64d8aa5ebe2d7bb6c16962ad41c15622937cac5068ede2f`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `c2b972ded55abaa382bfb6f59a1deaebcc2dc147e7dc54bb40d5cf5452deccb5`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 

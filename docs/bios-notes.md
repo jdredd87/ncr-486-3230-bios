@@ -60,7 +60,13 @@ If the keyboard interface test returns code 3 and the keyboard clock/data lines 
 
 ## Hard disks
 
-- **INT 13h handler.** The fixed-disk handler is at F000:94E3, installed at F000:907B. It supports functions **00h–15h only**: no INT 13h extensions, no LBA, CHS only, which means about **504 MB**.
+- **INT 13h handler.** The fixed-disk handler is at F000:94E3, installed at F000:907B. It supports functions **00h–15h only**: no INT 13h extensions, no LBA, CHS only, which means about **504 MB**. AH=08h reports one cylinder fewer than the table (a reserved diagnostic cylinder), and AH=15h counts the same.
+- **Large-disk (LBA) mode** (`tools_rom`). POST's call to the disk init (F000:436E) goes through the glue (G_HDINIT), which then calls E800:0016. For each drive set to Automatic that reports LBA and more than 1,032,192 sectors:
+  - The LBA-assisted geometry is computed: heads are the fewest of 32/64/128/255 that keep cylinders at or below 1024; sectors are 63.
+  - The data goes into F000:EED6–EF05, with chipset 9Bh bit 0 cleared and then set again, read back to check: a far jump to the previous INT 13h, flags, LBA sector counts, and two translated parameter tables (A0h signature, checksum byte).
+  - INT 13h points to E800:hd_int13, and INT 41h/46h to the tables.
+
+  For an LBA drive, functions 00–15h use CHS to LBA translation and ATA LBA commands (20h/30h/40h, up to 128 sectors per command, polled PIO with nIEN set, device-control byte restored from 40:76). Functions 41h–44h, 47h and 48h are EDD 1.1 (28-bit LBA). Status goes to 40:74. Every other drive number jumps straight on to the stock handler. The per-call state is on the caller's stack, so no RAM is reserved.
 - **Drive types.** CMOS 12h holds C (high nibble) and D (low nibble); F means an extended type in 19h/1Ah. Types index the table at F000:E401, 16 bytes each.
   - **0 = not installed.** POST skips the hard-disk init entirely (F000:90D9).
   - **1 = user-defined.** The geometry is in CMOS 72h–7Bh with a checksum in 7Ch, copied into the table at POST (F000:3C58). Setup refuses type 1 unless that checksum is valid (FA40:1227). `userhdd/userhdd.exe` writes it.
@@ -82,8 +88,8 @@ Zero-filled areas in the F000 segment:
 | F000 range | Bytes | Notes |
 |------------|------:|-------|
 | 9ED3–A3FF  | 1325  | Used: 9F30–9F5A `ide_nodrive_fast`, 9F5B–9FDB `hdd_auto`, A000–A109 `ide_atapi_skip`, A140–A20D `error_prompts`, A240–A2D6 and A300–A3F7 `fancy_boot`. Still free: 9ED3–9F2F, 9FDC–9FFF, A10A–A13F, A20E–A23F, A2D7–A2FF. |
-| EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EE68 `fancy_boot`, EE69–EED4 `hdd_auto`. Still free: EED5–EF56. |
-| F85C–FA6D  | 530   | Before the font (keep FA6E). Used: F860–F969 `tools_rom` glue. Still free: F96A–FA6D. |
+| EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EE68 `fancy_boot`, EE69–EED4 `hdd_auto`, EED6–EF05 `tools_rom` (LBA tables, written at POST). Still free: EF06–EF56. |
+| F85C–FA6D  | 530   | Before the font (keep FA6E). Used: F860–F97A `tools_rom` glue. Still free: F97B–FA6D. |
 | E831–E986  | 342   | Keep E987 |
 | F738–F840  | 265   | Keep F841 |
 | E73C–E82D  | 242   | Keep E82E |
@@ -92,15 +98,17 @@ Zero-filled areas in the F000 segment:
 
 ### The Tools extension (E800:0000)
 
-- **Location.** `tools_rom` puts a 12 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
+- **Location.** `tools_rom` puts a 15.5 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
 - **Entry points (far).**
   - E800:000A: Tools (AX=0 menu, 1 boot menu)
   - E800:000D: end-of-POST chime and summary
   - E800:0010: measure MHz (returns AX)
   - E800:0013: INT 19h boot override (returns only when there is none)
+  - E800:0016: after POST's disk init: large-disk (LBA) set-up
 - **BIOS hooks.**
   - F000:3891: speed line.
   - F000:47B6: end-of-POST beep, replaced by the chime and summary.
+  - F000:436E: POST's call to the hard disk init, then the LBA set-up.
   - F000:47CB: type-ahead key check (F8, F10).
   - F000:E6F2: INT 19h entry. It still starts at the fixed address and jumps to F000:E066 when nothing is overridden.
 - **RAM used before boot.**

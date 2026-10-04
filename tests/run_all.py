@@ -12,7 +12,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 SCRIPTS = ["test_userhdd.py", "test_userhdd_dos.py", "test_patches.py", "test_fancy.py", "test_tools.py",
-           "test_cdboot.py", "test_hdsetup.py"]
+           "test_cdboot.py", "test_hdsetup.py",
+           "test_lba.py"]
 
 subprocess.check_call([sys.executable, os.path.join(ROOT, "tools", "build_rom.py"), "--all"],
                       stdout=subprocess.DEVNULL)

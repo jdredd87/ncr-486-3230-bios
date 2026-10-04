@@ -32,15 +32,18 @@ G_POSTEND   equ G_BASE + 3
 G_KEYS      equ G_BASE + 6
 G_MHZ       equ G_BASE + 9
 G_BOOT      equ G_BASE + 12
+G_HDINIT    equ G_BASE + 15
 X_TOOLS     equ 0x000A              ; extension entry points (far)
 X_POSTEND   equ 0x000D
 X_MHZ       equ 0x0010
 X_BOOT      equ 0x0013
+X_HDINIT    equ 0x0016
 FLAG_INDEX  equ 0xC8                ; CMOS 48h: fancy boot screen (A5h = off)
 BEEP        equ 0x4F7D
 PRINT2      equ 0x4DD2              ; prints AX as two digits + " MHz"
 NCR_FDTEST  equ 0x0C00
 INT19_ORIG  equ 0xE066
+DISK_INIT   equ 0x9062              ; POST hard disk init
 BOOT_MAGIC  equ 0x424E              ; "NB" at 0000:04F0 (inter-application area)
 CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulation drive number
 
@@ -65,6 +68,15 @@ CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulatio
     nop
     nop
 
+;@ F000:436E max=3
+;; POST: was "call 9062" (hard disk init); now also sets up large disks
+    call G_HDINIT
+
+;@ F000:EED6 max=0x30 free
+;; reserved: large-disk (LBA) tables and the chain to the stock INT 13h,
+;; written at POST into the shadowed F000 (see hd_setup)
+    times 0x30 db 0
+
 ;@ F000:E6F2 max=3
 ;; INT 19h entry: was "jmp E066"
     jmp G_BOOT
@@ -76,6 +88,7 @@ CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulatio
     jmp near g_keys
     jmp near g_mhz
     jmp near g_boot
+    jmp near g_hdinit
 
 ; CF=0 if E800:0000 holds a valid extension (signature, size, checksum).
 ext_ok:
@@ -218,6 +231,14 @@ g_mhz:                              ; AX = CMOS 43h (POST's stored speed)
 .two:
     jmp PRINT2
 
+g_hdinit:                           ; POST disk init, then large-disk (LBA) mode
+    call DISK_INIT
+    call ext_ok
+    jc .x
+    call EXT_SEG:X_HDINIT
+.x:
+    ret
+
 g_boot:                             ; INT 19h
     call ext_ok
     jc .normal
@@ -239,6 +260,7 @@ ext_start:
     jmp near postend_entry          ; 000D
     jmp near mhz_entry              ; 0010
     jmp near boot_entry             ; 0013
+    jmp near hdinit_entry           ; 0016
 
 ; ------------------------------------------------------------------ variables (GS = VARSEG)
 V_VSEG      equ 0x00
@@ -1435,7 +1457,12 @@ ide_line:                           ; BX = device: print what is there
     shl si, 2
     mov eax, [gs:V_IDMB + si]
     call putdec
-    SAY " MB)"
+    SAY " MB"
+    call lba_drive
+    jc .nolba
+    SAY ", LBA"
+.nolba:
+    SAY ")"
     jmp short .x
 .atapi:
     SAY "  (CD-ROM / ATAPI)"
@@ -1444,6 +1471,21 @@ ide_line:                           ; BX = device: print what is there
     ret
 
 ; ------------------------------------------------------------------ floppy names
+
+lba_drive:                          ; BX = IDE device: CF=0 if BIOS drive 80h+BX is in LBA mode
+    pusha
+    mov dl, bl
+    or dl, 0x80
+    mov ah, 0x41
+    mov bx, 0x55AA
+    int 0x13
+    jc .x
+    cmp bx, 0xAA55
+    je .x                           ; (CF is clear here)
+    stc
+.x:
+    popa
+    ret
 
 floppy_name:                        ; AL = CMOS type nibble
     movzx si, al
@@ -1757,7 +1799,7 @@ page_drives:
     mov byte [gs:V_ATTR], A_DIM
     mov dx, 0x1103
     call goto_rc
-    SAY "Sizes are as the drive reports them. This BIOS reaches at most 504 MB.", 3
+    SAY "Sizes are as the drive reports them. Automatic disks over 504 MB use LBA.", 3
     SAY "A CD-ROM is used from DOS with a driver, e.g. OAKCDROM.SYS and MSCDEX."
     call wait_back
     clc
@@ -2212,7 +2254,7 @@ page_hdsetup:
     call goto_rc
     SAY "Automatic asks the drive for its geometry at every boot: right for any IDE", 3
     SAY "disk, nothing to type in. Use the user type only for a disk that must keep", 3
-    SAY "a geometry it was set up with elsewhere. This BIOS reaches at most 504 MB."
+    SAY "a geometry it was set up with elsewhere. Over 504 MB, Automatic uses LBA."
     mov al, 0x0D
     call cmos_read
     test al, 0x80
@@ -3711,6 +3753,637 @@ cdf_spec:                           ; 4B00h/4B01h: El Torito specification packe
     mov cx, 0x13
     rep movsb
     jmp cdf_ok
+
+; ------------------------------------------------------------------ large disks (LBA)
+; The stock INT 13h (F000:94E3) addresses disks by physical CHS, which ends at
+; 1024/16/63 = 504 MB. After POST's disk init, every hard disk set to
+; Automatic that supports LBA and holds more is switched to large-disk mode:
+;   * INT 13h AH=02h-15h use the standard LBA-assisted translation
+;     (32/64/128/255 heads, 63 sectors, at most 1024 cylinders = 8.4 GB) and
+;     ATA LBA commands, polled PIO.
+;   * The INT 13h extensions 41h-44h, 47h, 48h (EDD 1.1) reach the whole disk
+;     (28-bit LBA: up to 128 GB), for FAT32 and LBA partitions.
+;   * INT 41h/46h point at translated parameter tables (signature A0h).
+; Other drives keep the stock handler. Like the stock auto-detect (which
+; writes F000:E411), the tables live in the shadowed F000 segment, written
+; at POST with the shadow unlocked (chipset 9Bh bit 0); INT 13h points
+; straight at this ROM and keeps its working state on the stack, so no base
+; memory is taken. A disk partitioned with the old 504 MB limit can keep it
+; by setting it to the user type 1024/16/63 in Hard disk setup.
+
+HD_DATA     equ 0xEED6              ; F000: 30h bytes, reserved by the chunk below
+D_JMP       equ 0x00                ; EAh + previous INT 13h: the chain to the stock code
+D_FLAG      equ 0x06                ; 1 = drive 80h/81h in LBA mode
+D_TOTAL     equ 0x08                ; 2 dwords: LBA sectors
+D_FDPT      equ 0x10                ; 2 x 16 bytes: translated parameter tables
+D_SIZE      equ 0x30
+HD_CHAINJ   equ HD_DATA + D_JMP
+V_HTMP      equ 0x140               ; VARSEG: the data, built at POST
+L_LBA       equ -4                  ; locals below the INT 13h frame
+L_LEFT      equ -6
+L_DONE      equ -8
+L_CNT       equ -10
+L_DEV       equ -11
+L_MODE      equ -12                 ; 0 read, 1 write, 2 verify
+L_N         equ -13
+L_SIZE      equ 14
+
+hdinit_entry:                       ; far, from POST right after its disk init
+    ENTER
+    call hd_setup
+    LEAVE
+    retf
+
+hd_setup:
+    push 0x40
+    pop es
+    mov cl, [es:0x75]               ; hard disks POST counted
+    test cl, cl
+    jz .x
+    mov di, V_HTMP
+    xor al, al
+.z:
+    mov [gs:di], al
+    inc di
+    cmp di, V_HTMP + D_SIZE
+    jb .z
+    mov al, 0x12
+    call cmos_read
+    mov ch, al                      ; drive types
+    xor bx, bx
+.dev:
+    cmp bl, cl
+    jae .done
+    mov al, ch
+    shr al, 4
+    mov ah, 2                       ; C: Automatic
+    test bl, bl
+    jz .auto
+    mov al, ch
+    and al, 0x0F
+    mov ah, 3                       ; D: Automatic
+.auto:
+    cmp al, ah
+    jne .next
+    push cx
+    call ide_identify               ; BX = device -> AL = 1 for an ATA disk, data in V_IDBUF
+    pop cx
+    cmp al, 1
+    jne .next
+    test byte [gs:V_IDBUF + 99], 2  ; LBA supported
+    jz .next
+    mov eax, [gs:V_IDBUF + 120]     ; LBA sectors
+    cmp eax, 1024 * 16 * 63
+    jbe .next                       ; fits the stock 504 MB: leave it alone
+    cmp eax, 0x0FFFFFFF
+    jbe .t
+    mov eax, 0x0FFFFFFF
+.t:
+    push cx
+    mov si, bx
+    mov byte [gs:V_HTMP + D_FLAG + si], 1
+    shl si, 2
+    mov [gs:V_HTMP + D_TOTAL + si], eax
+    mov si, bx
+    shl si, 4
+    add si, V_HTMP + D_FDPT         ; GS:SI = this drive's table
+    mov ecx, 1024 * 32 * 63         ; heads: the fewest of 32/64/128/255 that fit
+    mov dl, 32
+.h:
+    cmp eax, ecx
+    jbe .hs
+    shl ecx, 1
+    shl dl, 1
+    jnz .h
+    mov dl, 255
+.hs:
+    mov [gs:si + 2], dl             ; logical heads
+    movzx ecx, dl
+    imul ecx, ecx, 63
+    xor edx, edx
+    div ecx                         ; cylinders
+    cmp eax, 1024
+    jbe .c
+    mov eax, 1024
+.c:
+    mov [gs:si], ax                 ; logical cylinders
+    mov byte [gs:si + 3], 0xA0      ; translated table
+    mov al, [gs:V_IDBUF + 12]
+    mov [gs:si + 4], al             ; physical sectors
+    mov word [gs:si + 5], 0xFFFF    ; no precompensation
+    mov byte [gs:si + 8], 0x08      ; more than 8 heads
+    mov ax, [gs:V_IDBUF + 2]
+    mov [gs:si + 9], ax             ; physical cylinders
+    mov [gs:si + 12], ax            ; landing zone
+    mov al, [gs:V_IDBUF + 6]
+    mov [gs:si + 11], al            ; physical heads
+    mov byte [gs:si + 14], 63       ; logical sectors
+    xor ax, ax
+    mov cx, 15
+.ck:
+    add al, [gs:si]
+    inc si
+    loop .ck
+    neg al
+    mov [gs:si], al                 ; bytes sum to 0
+    pop cx
+.next:
+    inc bx
+    jmp .dev
+.done:
+    mov ax, [gs:V_HTMP + D_FLAG]
+    test ax, ax
+    jz .x
+    push 0
+    pop ds
+    mov byte [gs:V_HTMP + D_JMP], 0xEA
+    mov eax, [0x13 * 4]             ; chain: jmp far to the stock INT 13h
+    mov [gs:V_HTMP + D_JMP + 1], eax
+    push 0xF000
+    pop es
+    call shadow_open
+    mov di, HD_DATA
+    mov si, V_HTMP
+    mov cx, D_SIZE
+.cp:
+    mov al, [gs:si]
+    stosb
+    inc si
+    loop .cp
+    mov ax, [0x7000]                ; a RAM read before locking, as POST does
+    call shadow_lock
+    mov di, HD_DATA                 ; did it stick? (no shadow RAM: stay on the stock code)
+    mov si, V_HTMP
+    mov cx, D_SIZE
+.vf:
+    mov al, [gs:si]
+    cmp al, [es:di]
+    jne .x
+    inc si
+    inc di
+    loop .vf
+    cli
+    mov word [0x13 * 4], hd_int13
+    mov word [0x13 * 4 + 2], EXT_SEG
+    cmp byte [gs:V_HTMP + D_FLAG], 0
+    je .d1
+    mov word [0x41 * 4], HD_DATA + D_FDPT
+    mov word [0x41 * 4 + 2], 0xF000
+.d1:
+    cmp byte [gs:V_HTMP + D_FLAG + 1], 0
+    je .d2
+    mov word [0x46 * 4], HD_DATA + D_FDPT + 16
+    mov word [0x46 * 4 + 2], 0xF000
+.d2:
+    sti
+.x:
+    push cs
+    pop ds
+    ret
+
+shadow_open:                        ; chipset 9Bh bit 0 clear: the F000 shadow is writable
+    mov al, 0x9B
+    call chip_read
+    and al, 0xFE
+    jmp short shadow_set
+shadow_lock:
+    mov al, 0x9B
+    call chip_read
+    or al, 0x01
+shadow_set:
+    mov ah, al
+    mov al, 0x9B
+    pushf
+    cli
+    out 0x22, al
+    mov al, ah
+    out 0x24, al
+    popf
+    ret
+
+; INT 13h for large disks. Not ours: straight on to the stock handler.
+hd_int13:
+    cmp dl, 0x80
+    jb .chain
+    cmp dl, 0x81
+    ja .chain
+    push ds
+    push 0xF000
+    pop ds
+    push bx
+    movzx bx, dl
+    cmp byte [bx + HD_DATA + D_FLAG - 0x80], 0
+    pop bx
+    jne hd_own
+    pop ds
+.chain:
+    jmp 0xF000:HD_CHAINJ
+
+; DS = F000. Frame after PUSHAD: DI 0, SI 4, BX 16, DX 20, CX 24, AX 28,
+; ES 32, caller DS 34; locals below BP.
+hd_own:
+    sti
+    cld
+    push es
+    pushad
+    mov bp, sp
+    sub sp, L_SIZE
+    mov al, [bp + 20]
+    sub al, 0x80
+    mov [bp + L_DEV], al
+    mov si, hd_funcs
+.f:
+    mov al, [cs:si]
+    cmp al, 0xFF
+    je hdf_bad
+    cmp al, [bp + 29]
+    je .hit
+    add si, 3
+    jmp short .f
+.hit:
+    jmp word [cs:si + 1]
+
+hd_funcs:
+    db 0x00
+    dw hdf_ok
+    db 0x01
+    dw hdf_status
+    db 0x02
+    dw hdf_rw
+    db 0x03
+    dw hdf_rw
+    db 0x04
+    dw hdf_rw
+    db 0x05
+    dw hdf_ok
+    db 0x08
+    dw hdf_params
+    db 0x09
+    dw hdf_ok
+    db 0x0C
+    dw hdf_ok
+    db 0x0D
+    dw hdf_ok
+    db 0x10
+    dw hdf_ok
+    db 0x11
+    dw hdf_ok
+    db 0x12
+    dw hdf_ok
+    db 0x13
+    dw hdf_ok
+    db 0x14
+    dw hdf_ok
+    db 0x15
+    dw hdf_type
+    db 0x41
+    dw hdf_ext
+    db 0x42
+    dw hdf_xrw
+    db 0x43
+    dw hdf_xrw
+    db 0x44
+    dw hdf_xrw
+    db 0x47
+    dw hdf_ok
+    db 0x48
+    dw hdf_xparams
+    db 0xFF
+
+hd_setstat:                         ; 40:74 = AL (last hard disk status)
+    push ds
+    push 0x40
+    pop ds
+    mov [0x74], al
+    pop ds
+    ret
+
+hdf_ok:
+    mov byte [bp + 29], 0
+hd_ret:                             ; AH in the frame = status (also 40:74), CF = status not zero
+    mov al, [bp + 29]
+    call hd_setstat
+    mov sp, bp
+    popad
+    pop es
+    pop ds
+    test ah, ah
+    jnz .e
+    retf 2
+.e:
+    stc
+    retf 2
+
+hd_ret_nc:                          ; CF=0 whatever AH is; status 0
+    xor al, al
+    call hd_setstat
+    mov sp, bp
+    popad
+    pop es
+    pop ds
+    clc
+    retf 2
+
+hdf_bad:
+    mov byte [bp + 29], 0x01
+    jmp short hd_ret
+
+hdf_status:
+    push ds
+    push 0x40
+    pop ds
+    mov al, [0x74]
+    pop ds
+    mov [bp + 29], al
+    mov sp, bp
+    popad
+    pop es
+    pop ds
+    clc
+    retf 2
+
+hdf_params:                         ; 08h: logical geometry
+    call hd_table
+    mov word [bp + 28], 0
+    mov ax, [si]
+    dec ax                          ; last cylinder
+    mov [bp + 25], al
+    shl ah, 6
+    or ah, [si + 14]
+    mov [bp + 24], ah
+    mov al, [si + 2]
+    dec al
+    mov [bp + 21], al
+    push ds
+    push 0x40
+    pop ds
+    mov al, [0x75]
+    pop ds
+    mov [bp + 20], al
+    jmp hdf_ok
+
+hdf_type:                           ; 15h: fixed disk, CX:DX = sectors
+    call hd_table
+    call hd_chs_total
+    mov [bp + 20], ax
+    shr eax, 16
+    mov [bp + 24], ax
+    mov byte [bp + 29], 0x03
+    jmp hd_ret_nc
+
+hd_table:                           ; -> SI = this drive's translated table
+    movzx si, byte [bp + L_DEV]
+    shl si, 4
+    add si, HD_DATA + D_FDPT
+    ret
+
+hd_chs_total:                       ; SI = table -> EAX = cylinders x heads x sectors
+    movzx eax, word [si]
+    movzx edx, byte [si + 2]
+    imul eax, edx
+    movzx edx, byte [si + 14]
+    imul eax, edx
+    ret
+
+hdf_rw:                             ; 02h/03h/04h: AL sectors at CH/CL/DH, ES:BX
+    call hd_table
+    movzx ebx, byte [bp + 24]
+    mov ax, bx
+    shl ax, 2
+    and ax, 0x300
+    mov al, [bp + 25]               ; cylinder
+    and bx, 0x3F                    ; sector
+    jz .nf
+    cmp bl, [si + 14]
+    ja .nf
+    cmp ax, [si]
+    jae .nf
+    movzx ecx, byte [bp + 21]
+    cmp cl, [si + 2]
+    jae .nf
+    movzx eax, ax
+    movzx edx, byte [si + 2]
+    imul eax, edx
+    add eax, ecx
+    movzx edx, byte [si + 14]
+    imul eax, edx
+    dec bx
+    add eax, ebx                    ; LBA
+    movzx cx, byte [bp + 28]
+    test cx, cx
+    jz hdf_bad
+    mov dl, [bp + 29]
+    sub dl, 2                       ; 0 read, 1 write, 2 verify
+    mov [bp + L_MODE], dl
+    mov es, [bp + 32]
+    mov di, [bp + 16]
+    call ata_xfer
+    mov [bp + 28], dl               ; sectors done
+    mov [bp + 29], ah
+    jmp hd_ret
+.nf:
+    mov byte [bp + 28], 0
+    mov byte [bp + 29], 0x04        ; sector not found
+    jmp hd_ret
+
+hdf_ext:                            ; 41h
+    cmp word [bp + 16], 0x55AA
+    jne hdf_bad
+    mov word [bp + 16], 0xAA55
+    mov byte [bp + 29], 0x21        ; EDD 1.1
+    mov word [bp + 24], 0x0001      ; fixed-disk access subset
+    jmp hd_ret_nc
+
+hdf_xrw:                            ; 42h/43h/44h: DS:SI = disk address packet
+    mov dl, [bp + 29]
+    sub dl, 0x42
+    mov [bp + L_MODE], dl
+    mov es, [bp + 34]
+    mov si, [bp + 4]
+    cmp dword [es:si + 12], 0       ; 28-bit LBA only
+    jne .nf
+    mov eax, [es:si + 8]
+    mov cx, [es:si + 2]
+    les di, [es:si + 4]
+    call ata_xfer
+    mov [bp + 29], ah
+.count:
+    mov es, [bp + 34]
+    mov si, [bp + 4]
+    mov [es:si + 2], dx             ; sectors transferred
+    jmp hd_ret
+.nf:
+    xor dx, dx
+    mov byte [bp + 29], 0x04
+    jmp short .count
+
+hdf_xparams:                        ; 48h
+    mov es, [bp + 34]
+    mov di, [bp + 4]
+    cmp word [es:di], 0x1A
+    jb hdf_bad
+    call hd_table
+    mov word [es:di], 0x1A
+    mov word [es:di + 2], 0x0002    ; geometry valid
+    movzx eax, word [si]
+    mov [es:di + 4], eax
+    movzx eax, byte [si + 2]
+    mov [es:di + 8], eax
+    movzx eax, byte [si + 14]
+    mov [es:di + 12], eax
+    movzx bx, byte [bp + L_DEV]
+    shl bx, 2
+    mov eax, [bx + HD_DATA + D_TOTAL]
+    mov [es:di + 16], eax
+    mov dword [es:di + 20], 0
+    mov word [es:di + 24], 512
+    jmp hdf_ok
+
+; EAX = LBA, CX = sectors, ES:DI = buffer, L_DEV, L_MODE. -> DX = sectors done,
+; AH = BIOS status (0 = good). Up to 128 sectors per ATA command.
+ata_xfer:
+    mov [bp + L_LBA], eax
+    mov [bp + L_LEFT], cx
+    mov word [bp + L_DONE], 0
+    movzx ebx, byte [bp + L_DEV]    ; past the end of the disk?
+    shl bx, 2
+    movzx ecx, cx
+    add eax, ecx
+    jc .range
+    cmp eax, [bx + HD_DATA + D_TOTAL]
+    ja .range
+    call norm_esdi
+    mov dx, 0x3F6
+    mov al, 0x0A                    ; polled: no interrupts
+    out dx, al
+.chunk:
+    mov cx, [bp + L_LEFT]
+    test cx, cx
+    jz .good
+    cmp cx, 128
+    jbe .n
+    mov cx, 128
+.n:
+    mov [bp + L_N], cl
+    mov [bp + L_CNT], cx
+    mov dx, 0x1F6
+    mov eax, [bp + L_LBA]
+    shr eax, 24
+    and al, 0x0F
+    or al, 0xE0                     ; LBA
+    mov ah, [bp + L_DEV]
+    shl ah, 4
+    or al, ah
+    out dx, al
+    mov dx, 0x1F7
+    mov ah, 0x40                    ; ready
+    call atapi_wait
+    jc .timeout
+    mov dx, 0x1F2
+    mov al, cl
+    out dx, al
+    inc dx
+    mov eax, [bp + L_LBA]
+    out dx, al
+    inc dx
+    mov al, ah
+    out dx, al
+    inc dx
+    shr eax, 16
+    out dx, al
+    mov dx, 0x1F7
+    mov al, 0x20                    ; READ SECTORS
+    cmp byte [bp + L_MODE], 1
+    jb .cmd
+    mov al, 0x30                    ; WRITE SECTORS
+    je .cmd
+    mov al, 0x40                    ; READ VERIFY SECTORS
+.cmd:
+    out dx, al
+    cmp byte [bp + L_MODE], 2
+    je .verify
+.sector:
+    mov ah, 0x09                    ; DRQ or ERR
+    call atapi_wait
+    jc .timeout
+    test al, 0x01
+    jnz .err
+    mov cx, 256
+    mov dx, 0x1F0
+    cmp byte [bp + L_MODE], 0
+    jne .w
+    rep insw
+    jmp short .moved
+.w:
+    push ds
+    push es
+    pop ds
+    mov si, di
+    rep outsw
+    pop ds
+    add di, 512
+.moved:
+    call norm_esdi
+    mov dx, 0x1F7
+    inc word [bp + L_DONE]
+    dec byte [bp + L_N]
+    jnz .sector
+    cmp byte [bp + L_MODE], 1       ; a write: wait until it is on the disk
+    jne .next
+.verify:
+    xor ah, ah
+    call atapi_wait
+    jc .timeout
+    test al, 0x01
+    jnz .err
+    cmp byte [bp + L_MODE], 2
+    jne .next
+    mov ax, [bp + L_CNT]            ; verify: the whole command at once
+    add [bp + L_DONE], ax
+.next:
+    movzx eax, word [bp + L_CNT]
+    add [bp + L_LBA], eax
+    sub [bp + L_LEFT], ax
+    jmp .chunk
+.good:
+    xor ah, ah
+    jmp short .out
+.range:
+    mov ah, 0x04
+    xor dx, dx
+    ret
+.timeout:
+    mov ah, 0x80
+    jmp short .out
+.err:
+    mov dx, 0x1F1
+    in al, dx
+    mov ah, 0x10                    ; UNC: uncorrectable data
+    test al, 0x40
+    jnz .out
+    mov ah, 0x04                    ; IDNF: sector not found
+    test al, 0x10
+    jnz .out
+    mov ah, 0x0A                    ; BBK: bad sector
+    test al, 0x80
+    jnz .out
+    mov ah, 0xBB                    ; anything else: undefined error
+.out:
+    push ax
+    mov dx, 0x1F7
+    in al, dx
+    push ds
+    push 0x40
+    pop ds
+    mov al, [0x76]
+    and al, 0x0B
+    mov dx, 0x3F6
+    out dx, al
+    and byte [0x8E], 0x7F
+    pop ds
+    pop ax
+    mov dx, [bp + L_DONE]
+    ret
 
 ; ------------------------------------------------------------------ memory test
 
