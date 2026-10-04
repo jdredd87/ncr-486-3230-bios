@@ -11,20 +11,21 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | Patch | What it fixes |
 |---|---|
 | `no_burnin` | A certain keyboard failure no longer reboots into NCR's factory burn-in mode, where F1 does nothing |
-| `battery_prompt` | "Battery Power Lost" style prompts continue after about 3 s instead of waiting forever. F1 still enters Setup. |
+| `error_prompts` | POST prompts continue on their own after a countdown: 5 s for errors such as "Disk controller failure", 3 s for battery and settings warnings. ENTER continues straight away, F1 opens Setup and Ctrl-D works as before. |
 | `ide_nodrive_fast` | A drive type set with nothing connected: POST waits about 0.05 s instead of about 16 s |
 | `ide_atapi_skip` | A CD-ROM where a drive type is set is skipped in about 1 s with a note, instead of about 32 s plus a phantom hard disk |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079 |
+| `fancy_boot` | A blue boot screen with a typed-in banner, the credits and a "Press <F1> for SETUP" hint. Errors print in red, warnings in yellow, and list items get bullets. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). The credits also appear on Setup's title line. With the screen switched off, POST looks exactly as before. |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved.
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 113 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
 
-**On the real machine (2026-10-03):** the improved ROM, programmed into a new chip, POSTs and boots. `ide_atapi_skip` is confirmed: with a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on without the long wait. The other patches are tested only in the emulator so far.
+**On the real machine (2026-10-03):** the previous build (without `error_prompts` and `fancy_boot`) POSTs and boots, and `ide_atapi_skip` is confirmed. With a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on. The new countdown, boot screen and Setup option are tested only in the emulator so far.
 
 ### Flashing
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `8500f9736530436586f6a667cc7a396a495d8e8c133680a69b1433b4443004bf`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `2be04a2fb7b3bc330d99d02ba506d729a67c6b6206c632816544e777c001c285`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 

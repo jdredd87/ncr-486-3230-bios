@@ -49,7 +49,8 @@ Inside the F000 segment:
   - A: = 1.44 MB (10h = 40h);
   - no hard disks;
   - 44h = E5h, 47h = 4Eh (bit 6 = boot from floppy).
-- **RTC setup.** RTC register B is sanitized at F000:2258 and register A is set to 26h at F000:2BBA. The time-of-day conversion (F000:8192) range-checks every field. A battery-less boot is safe, but it stops at "Battery Power Lost … Press <F1> or <ENTER>" (the `battery_prompt` patch makes that time out).
+- **RTC setup.** RTC register B is sanitized at F000:2258 and register A is set to 26h at F000:2BBA. The time-of-day conversion (F000:8192) range-checks every field. A battery-less boot is safe, but the stock BIOS stops at "Battery Power Lost … Press <F1> or <ENTER>". The `error_prompts` patch makes that prompt, and the "Press <ENTER> to continue" prompt for other errors, count down and continue.
+- **CMOS 48h** is unused by the stock BIOS (POST's defaults clear only 10h–47h). The `fancy_boot` patch uses it as the boot-screen switch: A5h means off, and anything else means on. Setup's F2 screen toggles it with F3.
 - **Date.** INT 1Ah AH=04h/05h use the century byte (32h), so there is no Y2K bug there. Setup accepts years 1980–2099 with correct leap years. Unpatched, two-digit years 00–79 are rejected (the `setup_year` patch fixes that).
 - **CPU speed.** "PROCESSOR SPEED: xx MHz" prints CMOS 43h, which neither POST nor Setup writes.
 
@@ -78,13 +79,13 @@ Zero-filled areas in the F000 segment:
 
 | F000 range | Bytes | Notes |
 |------------|------:|-------|
-| 9ED3–A3FF  | 1325  | Now used in part: 9F00–9F2F `battery_prompt`, 9F30–9F6F `ide_nodrive_fast`, A000–A13F `ide_atapi_skip`. Free: 9F70–9FFF and A140–A3F7. |
-| EC5C–EF56  | 763   | Between fixed entry points (keep EF57) |
+| 9ED3–A3FF  | 1325  | Used: 9F30–9F5A `ide_nodrive_fast`, A000–A109 `ide_atapi_skip`, A140–A203 `error_prompts`, A240–A2D6 and A300–A3F7 `fancy_boot`. Still free: 9ED3–9F2F, 9F5B–9FFF, A10A–A13F, A204–A23F, A2D7–A2FF. |
+| EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EDF9 `fancy_boot`. Still free: EDFA–EF56. |
 | F85C–FA6D  | 530   | Before the font (keep FA6E) |
 | E831–E986  | 342   | Keep E987 |
 | F738–F840  | 265   | Keep F841 |
 | E73C–E82D  | 242   | Keep E82E |
-| DF71–DFFF  | 143   | Inside the Setup module (FA40:3B71–3BFF) |
+| DF71–DFFF  | 143   | Inside the Setup module (FA40:3B71–3BFF). Used: FA40:3B71–3B90 and 3BA0–3BED `fancy_boot`. |
 | 0006–00A5  | 160   | Purpose not confirmed; avoid |
 
 Never move the IBM fixed entry points (E05B, E2C3, E6F2, E739, E82E, E987, EC59, EF57, EFC7, EFD2, F065, F0A4, F841, F84D, F859, FA6E, FE6E, FEA5, FEF3, FF23, FF53, FF54, FFF0). DOS-era software jumps to them directly.

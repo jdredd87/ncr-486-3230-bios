@@ -17,7 +17,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 ORIGINAL = os.path.join(ROOT, "NCR-BIOS-517-0000672-VER2.03.00-U19.BIN")
-RECOMMENDED = ["no_burnin", "battery_prompt", "ide_nodrive_fast", "ide_atapi_skip", "setup_year"]
+RECOMMENDED = ["no_burnin", "error_prompts", "ide_nodrive_fast", "ide_atapi_skip", "setup_year", "fancy_boot"]
 RECOMMENDED_OUT = os.path.join(ROOT, "build", "NCR3230-203-improved.BIN")
 
 

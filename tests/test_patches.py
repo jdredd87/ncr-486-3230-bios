@@ -44,32 +44,49 @@ check(burnin(ORIGINAL) == "burnin", "original: AH=0 at F000:474C enters burn-in 
 check(burnin(IMPROVED) == "prompt", "improved: AH=0 goes to the normal error/F1 prompt instead")
 
 
-# ---------------------------------------------------------------- battery prompt
+# ---------------------------------------------------------------- error prompts
+PROMPT_STOPS = {(0xF000, 0x47AF): "continue", (0xF000, 0x47B6): "enter",
+                (0xF000, 0x47D6): "setup", (0xF000, 0x4810): "ctrl-d"}
+
+
 def prompt(image, keys=(), flags=0x04):
-    """Run the POST error-prompt block (F000:4775) with 'battery lost' flags."""
+    """Run POST's error-prompt block (F000:4775) with the given error flags
+    (04h = battery lost, 02h = other error such as a disk failure) and report
+    where it goes: continue (timeout), enter, setup (F1) or ctrl-d."""
     m = Machine(image)
     m.install_rom_vectors()
     m.keys = list(keys)
     m.write(0x46C, b"\x00\x00")
-    m.tick_at(0xF9F10)
+    blob = m.read(0xFA140, 0x100)
+    i = blob.find(bytes([0xB4, 0x01, 0xCD, 0x16]))          # countdown poll loop
+    if i >= 0 and image != ORIGINAL:
+        m.tick_at(0xFA140 + i)
     try:
-        m.run_until(0xF000, 0x4775, 0xF000, 0x47AF, ax=flags, ds=0x40, max_insns=50_000_000)
-        return "continued", m
+        return m.run_to_any(0xF000, 0x4775, PROMPT_STOPS, ax=flags, ds=0x40), m
     except StopEmu as e:
         return str(e), m
 
 
 r, m = prompt(ORIGINAL)
 check("wait for key" in r, "original: battery-lost prompt blocks waiting for a key")
+r, m = prompt(ORIGINAL, flags=0x02)
+check("wait for key" in r, "original: 'Press <ENTER> to continue' prompt blocks waiting for a key")
+
 r, m = prompt(IMPROVED)
-check(r == "continued" and 50 <= m.ticks_advanced <= 60,
-      "improved: no key -> continues after ~3 s (%s ticks)" % getattr(m, "ticks_advanced", "?"))
-check("Press <F1> for SETUP" in m.text(), "improved: prompt text still shown")
-r, m = prompt(IMPROVED, keys=[0x3B00])
-check(r == "continued" and getattr(m, "ticks_advanced", 0) <= 1 and m.keys == [0x3B00],
-      "improved: F1 pressed -> stops waiting at once and F1 stays queued for the Setup check")
+t = getattr(m, "ticks_advanced", 0)
+check(r == "continue" and 3 * 18 <= t <= 3 * 18 + 3, "improved: battery prompt continues after 3 s (%d ticks)" % t)
+check("Press <F1> for SETUP" in m.text() and "Continuing in 3s" in m.text(), "improved: prompt and countdown shown")
 r, m = prompt(IMPROVED, flags=0x02)
-check("wait for key" in r, "improved: other errors (e.g. disk failure) still wait for Enter")
+t = getattr(m, "ticks_advanced", 0)
+check(r == "continue" and 5 * 18 <= t <= 5 * 18 + 3, "improved: error prompt continues after 5 s (%d ticks)" % t)
+check("Press <ENTER> to continue - continuing in 5s" in m.text(), "improved: error prompt shows the countdown")
+for keys, want, what in (([0x3B00], "setup", "F1 opens Setup"), ([0x1C0D], "enter", "ENTER continues at once"),
+                         ([0x2004], "ctrl-d", "Ctrl-D still reaches its handler")):
+    for flags in (0x04, 0x02):
+        r, m = prompt(IMPROVED, keys=keys, flags=flags)
+        check(r == want, "improved: %s (flags %02Xh)" % (what, flags))
+r, m = prompt(IMPROVED, keys=[0x2D78], flags=0x02)
+check(r == "continue" and m.keys == [], "improved: any other key is ignored and the countdown finishes")
 
 
 # ---------------------------------------------------------------- setup year
