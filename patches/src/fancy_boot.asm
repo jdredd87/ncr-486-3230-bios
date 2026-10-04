@@ -109,6 +109,16 @@ splash:
     call typeline
     mov di, 160*2+4
     mov si, row2
+    push es                     ; tools extension present at E800:0000?
+    mov ax, 0xE800
+    mov es, ax
+    cmp word [es:0], 'NC'
+    jne .notools
+    cmp word [es:2], 'RX'
+    jne .notools
+    mov si, row2t
+.notools:
+    pop es
     call typeline
     mov ah, 2
     mov bh, 0
@@ -198,6 +208,13 @@ row2:
     db 1, 0x1E, "Enhanced by StevenC & Claude"
     db 1, 0x13, "  ", 0xFA, "  "
     db 1, 0x1A, "Press <F1> for SETUP"
+    db 0
+row2t:
+    db 1, 0x1E, "Enhanced by StevenC & Claude"
+    db 1, 0x13, "  ", 0xFA, "  "
+    db 1, 0x1F, "F1", 1, 0x17, " Setup  "
+    db 1, 0x1F, "F8", 1, 0x17, " Boot menu  "
+    db 1, 0x1F, "F10", 1, 0x17, " Tools"
     db 0
 
 ; ------------------------------------------------------------------ coloured messages

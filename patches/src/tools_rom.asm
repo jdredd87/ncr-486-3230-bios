@@ -1,0 +1,2820 @@
+; NCR 3230 Tools: a utilities extension in the unused 32 KB at E800:0000,
+; plus the small hooks in the system BIOS that use it.
+;
+; The extension lives in the ROM chip's otherwise empty E8000-EFFFF area
+; (image offset 08000h). Before using it, the BIOS checks for the "NCRX"
+; signature and a 16-bit checksum over the whole extension; if the board
+; does not map that area, every feature below simply stays off and POST
+; behaves as before.
+;
+; At the end of POST:
+;   * F10 opens the Tools menu, F8 opens the boot menu (type-ahead, like F1).
+;   * With the fancy boot screen on: a start-up chime instead of the single
+;     beep, and a system summary box for 3 s (any key skips it).
+; During POST: "PROCESSOR SPEED" shows the measured clock instead of the
+; never-written CMOS byte 43h.
+; INT 19h (boot): a one-shot boot device chosen in the boot menu.
+;
+; Tools menu: system information, drives (IDE model names for disks and
+; CD-ROMs), memory map with option ROMs, memory test (conventional and all
+; extended memory, flat real mode), CMOS viewer, NCR's built-in floppy
+; drive test (hidden behind Ctrl-D in the stock BIOS), boot menu.
+
+; ------------------------------------------------------------------ addresses
+
+EXT_SEG     equ 0xE800
+VARSEG      equ 0x0500              ; RAM for variables/buffers: linear 05000-055FF
+STACK_TOP   equ 0x7000              ; private stack 0000:7000 (pre-boot RAM)
+G_BASE      equ 0xF860              ; glue jump table in F000
+G_FDTEST    equ G_BASE              ; far: NCR floppy drive test
+G_POSTEND   equ G_BASE + 3
+G_KEYS      equ G_BASE + 6
+G_MHZ       equ G_BASE + 9
+G_BOOT      equ G_BASE + 12
+X_TOOLS     equ 0x000A              ; extension entry points (far)
+X_POSTEND   equ 0x000D
+X_MHZ       equ 0x0010
+X_BOOT      equ 0x0013
+FLAG_INDEX  equ 0xC8                ; CMOS 48h: fancy boot screen (A5h = off)
+BEEP        equ 0x4F7D
+PRINT2      equ 0x4DD2              ; prints AX as two digits + " MHz"
+NCR_FDTEST  equ 0x0C00
+INT19_ORIG  equ 0xE066
+BOOT_MAGIC  equ 0x424E              ; "NB" at 0000:04F0 (inter-application area)
+
+; ------------------------------------------------------------------ F000 hooks
+
+;@ F000:3891 max=3
+;; "PROCESSOR SPEED: nn MHz": was "call 4DD2" with AX = CMOS 43h
+    call G_MHZ
+
+;@ F000:47B6 max=6
+;; end of POST: was "mov bx,350h / call 4F7D" (one beep)
+    call G_POSTEND
+    nop
+    nop
+    nop
+
+;@ F000:47CB max=7
+;; type-ahead key check: was "cmp ax,3B00h / jne 4806"; F1 still goes to Setup
+    call G_KEYS
+    nop
+    nop
+    nop
+    nop
+
+;@ F000:E6F2 max=3
+;; INT 19h entry: was "jmp E066"
+    jmp G_BOOT
+
+;@ F000:F860 max=0x200 free
+;; glue: checks the extension and calls into it; falls back to the stock code
+    jmp near g_fdtest
+    jmp near g_postend
+    jmp near g_keys
+    jmp near g_mhz
+    jmp near g_boot
+
+; CF=0 if E800:0000 holds a valid extension (signature, size, checksum).
+ext_ok:
+    push ax
+    push bx
+    push cx
+    push si
+    push ds
+    mov ax, EXT_SEG
+    mov ds, ax
+    cmp word [0], 'NC'
+    jne .bad
+    cmp word [2], 'RX'
+    jne .bad
+    mov cx, [4]
+    cmp cx, 8
+    jb .bad
+    cmp cx, 0x8000
+    ja .bad
+    test cl, 1
+    jnz .bad
+    shr cx, 1
+    xor si, si
+    xor bx, bx
+    cld
+.sum:
+    lodsw
+    add bx, ax
+    loop .sum
+    test bx, bx
+    jnz .bad
+    clc
+    jmp short .out
+.bad:
+    stc
+.out:
+    pop ds
+    pop si
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+g_fdtest:                           ; far, from the extension
+    pusha
+    push ds
+    push es
+    call NCR_FDTEST
+    pop es
+    pop ds
+    popa
+    retf
+
+g_postend:                          ; replaces the end-of-POST beep
+    call ext_ok
+    jc .beep
+    push ax
+    pushf
+    cli
+    mov al, FLAG_INDEX
+    out 0x70, al
+    in al, 0x71
+    popf
+    cmp al, 0xA5
+    pop ax
+    je .beep
+    call EXT_SEG:X_POSTEND
+    ret
+.beep:
+    mov bx, 0x350
+    jmp BEEP
+
+g_keys:                             ; AX = key waiting (peeked by POST)
+    push bp
+    mov bp, sp
+    cmp ax, 0x3B00                  ; F1: Setup, as before
+    jne .k1
+    mov word [bp+2], 0x47D2
+    pop bp
+    ret
+.k1:
+    cmp ax, 0x4400                  ; F10: Tools
+    je .tools
+    cmp ax, 0x4200                  ; F8: boot menu
+    je .tools
+.other:
+    mov word [bp+2], 0x4806
+    pop bp
+    ret
+.tools:
+    call ext_ok
+    jc .other
+    pusha
+    push ds
+    push es
+    mov bx, ax
+    xor ax, ax
+    int 0x16                        ; take the key
+    xor ax, ax
+    cmp bx, 0x4200
+    jne .go
+    inc ax                          ; page 1 = boot menu
+.go:
+    call EXT_SEG:X_TOOLS
+    pop es
+    pop ds
+    popa
+    mov word [bp+2], 0x47FE         ; continue POST after the key check
+    pop bp
+    ret
+
+g_mhz:                              ; AX = CMOS 43h (POST's stored speed)
+    call ext_ok
+    jc .print
+    push ax
+    call EXT_SEG:X_MHZ              ; AX = measured MHz, 0 if it failed
+    test ax, ax
+    jz .old
+    add sp, 2
+    jmp short .print
+.old:
+    pop ax
+.print:
+    cmp ax, 100
+    jb .two
+    push ax
+    push bx
+    mov bl, 100
+    div bl                          ; AL = hundreds, AH = rest
+    push ax
+    add al, '0'
+    mov ah, 0x0E
+    mov bx, 0x0007
+    int 0x10
+    pop ax
+    mov al, ah
+    xor ah, ah
+    pop bx
+    add sp, 2
+.two:
+    jmp PRINT2
+
+g_boot:                             ; INT 19h
+    call ext_ok
+    jc .normal
+    call EXT_SEG:X_BOOT             ; returns only if there is no override
+.normal:
+    jmp INT19_ORIG
+
+; ================================================================== extension
+
+;@ E800:0000 max=0x8000 ff
+;; NCR 3230 Tools extension (runs as E800:xxxx)
+bits 16
+ext_start:
+    db "NCRX"
+    dw ext_end - ext_start          ; size covered by the checksum
+    dw 0                            ; checksum, filled in by fix_checksum.py
+    db 1, 0                         ; version
+    jmp near tools_entry            ; 000A
+    jmp near postend_entry          ; 000D
+    jmp near mhz_entry              ; 0010
+    jmp near boot_entry             ; 0013
+
+; ------------------------------------------------------------------ variables (GS = VARSEG)
+V_VSEG      equ 0x00
+V_MONO      equ 0x02
+V_ATTR      equ 0x03
+V_ROW       equ 0x04
+V_COL       equ 0x05
+V_LMARG     equ 0x06
+V_SEL       equ 0x07
+V_SAVESS    equ 0x08
+V_SAVESP    equ 0x0A
+V_ARG       equ 0x0C
+V_RET       equ 0x0E
+V_SIG       equ 0x10
+V_CPUID     equ 0x14
+V_FPU       equ 0x15
+V_MHZV      equ 0x16
+V_VEND      equ 0x18                ; 13 bytes
+V_ERRS      equ 0x28
+V_PASS      equ 0x2C
+V_TEST      equ 0x2E
+V_NLOG      equ 0x2F
+V_START     equ 0x30
+V_END       equ 0x34
+V_ADDR      equ 0x38
+V_PAT       equ 0x3C
+V_EXP       equ 0x40
+V_TMP       equ 0x44
+V_IDTYPE    equ 0x48                ; 2 bytes
+V_STOP      equ 0x4A
+V_LOG       equ 0x50                ; 6 entries x 12 bytes (addr, expected, read)
+V_IDMB      equ 0x98                ; 2 dwords
+V_IDNAME    equ 0xA0                ; 2 x 41 bytes
+V_IDFW      equ 0xF4                ; 2 x 9 bytes
+V_NUM       equ 0x108               ; 16 bytes
+V_IDBUF     equ 0x200               ; 512 bytes
+V_TLOOP     equ 0x400               ; timing loop copied to RAM
+
+; colours (mapped for monochrome by xlat)
+A_BG        equ 0x17
+A_BAR       equ 0x30
+A_TITLE     equ 0x1E
+A_LABEL     equ 0x1B
+A_VALUE     equ 0x1F
+A_DIM       equ 0x13
+A_SEL       equ 0x3F
+A_OK        equ 0x1A
+A_BAD       equ 0x1C
+A_BOX       equ 0x1B
+
+%macro SAY 1+                       ; print an inline string with escapes
+    call say
+    db %1, 0
+%endmacro
+
+; ------------------------------------------------------------------ entry/exit
+; Each far entry switches to a private stack and keeps every register.
+%macro ENTER 0
+    push gs
+    push ax
+    mov ax, VARSEG
+    mov gs, ax
+    pop ax
+    mov [gs:V_ARG], ax
+    mov [gs:V_SAVESS], ss
+    mov [gs:V_SAVESP], sp
+    cli
+    mov ss, [cs:zero_word]          ; keep every caller register for pushad
+    mov sp, STACK_TOP
+    sti
+    pushad
+    push ds
+    push es
+    push fs
+    push cs
+    pop ds
+    cld
+%endmacro
+
+%macro LEAVE 0
+    pop fs
+    pop es
+    pop ds
+    popad
+    cli
+    mov ss, [gs:V_SAVESS]
+    mov sp, [gs:V_SAVESP]
+    sti
+    pop gs
+%endmacro
+
+zero_word: dw 0
+
+tools_entry:                        ; AX = 0 menu, 1 boot menu
+    ENTER
+    call ui_init
+    call gather_cpu
+    cmp word [gs:V_ARG], 1
+    jne .menu
+    call page_boot
+    jmp short .done
+.menu:
+    call page_menu
+.done:
+    call ui_done
+    LEAVE
+    retf
+
+postend_entry:
+    ENTER
+    call ui_init
+    call chime
+    call gather_cpu
+    call page_summary
+    LEAVE
+    retf
+
+mhz_entry:                          ; returns AX = MHz (0 = failed)
+    ENTER
+    call measure_mhz
+    pop fs
+    pop es
+    pop ds
+    popad
+    mov ax, [gs:V_MHZV]             ; GS is still VARSEG here
+    cli
+    mov ss, [gs:V_SAVESS]
+    mov sp, [gs:V_SAVESP]
+    sti
+    pop gs
+    retf
+
+boot_entry:                         ; returns (CF=1) when there is no override
+    ENTER
+    call boot_override
+    LEAVE
+    stc
+    retf
+
+; ------------------------------------------------------------------ screen library
+
+ui_init:
+    push ax
+    push es
+    mov ax, 0x40
+    mov es, ax
+    mov al, [es:0x49]
+    mov word [gs:V_VSEG], 0xB800
+    mov byte [gs:V_MONO], 0
+    cmp al, 7
+    jne .colour
+    mov word [gs:V_VSEG], 0xB000
+    mov byte [gs:V_MONO], 1
+    jmp short .ok
+.colour:
+    cmp al, 2
+    je .ok
+    cmp al, 3
+    je .ok
+    mov ax, 0x0003                  ; graphics mode: switch to 80x25 text
+    int 0x10
+.ok:
+    mov ah, 1
+    mov cx, 0x2000                  ; hide the cursor
+    int 0x10
+    pop es
+    pop ax
+    ret
+
+ui_done:
+    mov ax, 0x0003
+    cmp byte [gs:V_MONO], 0
+    je .set
+    mov al, 7
+.set:
+    int 0x10                        ; clean screen for booting
+    ret
+
+xlat:                               ; AH = attribute, mapped for monochrome
+    cmp byte [gs:V_MONO], 0
+    je .done
+    test ah, 0x20                   ; cyan/grey bars -> reverse video
+    jz .text
+    test ah, 0x10
+    jz .text
+    mov ah, 0x70
+    ret
+.text:
+    test ah, 0x08
+    mov ah, 0x07
+    jz .done
+    mov ah, 0x0F
+.done:
+    ret
+
+goto_rc:                            ; DH = row, DL = column
+    mov [gs:V_ROW], dh
+    mov [gs:V_COL], dl
+    mov [gs:V_LMARG], dl
+    ret
+
+putc:                               ; AL at the current position, current attribute
+    push ax
+    push bx
+    push di
+    push es
+    mov es, [gs:V_VSEG]
+    movzx bx, byte [gs:V_ROW]
+    imul bx, bx, 160
+    movzx di, byte [gs:V_COL]
+    shl di, 1
+    add di, bx
+    mov ah, [gs:V_ATTR]
+    call xlat
+    mov [es:di], ax
+    inc byte [gs:V_COL]
+    pop es
+    pop di
+    pop bx
+    pop ax
+    ret
+
+puts:                               ; DS:SI, escapes: 1,a attr / 2,r,c position / 3 newline
+    push ax
+.next:
+    lodsb
+    or al, al
+    jz .end
+    cmp al, 1
+    jne .p
+    lodsb
+    mov [gs:V_ATTR], al
+    jmp short .next
+.p:
+    cmp al, 2
+    jne .n
+    lodsb
+    mov [gs:V_ROW], al
+    lodsb
+    mov [gs:V_COL], al
+    mov [gs:V_LMARG], al
+    jmp short .next
+.n:
+    cmp al, 3
+    jne .c
+    inc byte [gs:V_ROW]
+    mov al, [gs:V_LMARG]
+    mov [gs:V_COL], al
+    jmp short .next
+.c:
+    call putc
+    jmp short .next
+.end:
+    pop ax
+    ret
+
+say:                                ; inline string after the call
+    push bp
+    mov bp, sp
+    push si
+    mov si, [bp+2]
+    call puts
+    mov [bp+2], si
+    pop si
+    pop bp
+    ret
+
+puts_gs:                            ; GS:SI, zero-terminated, no escapes
+    push ax
+.l:
+    mov al, [gs:si]
+    inc si
+    or al, al
+    jz .e
+    call putc
+    jmp short .l
+.e:
+    pop ax
+    ret
+
+spaces:                             ; CX blanks
+    push ax
+    mov al, ' '
+.l:
+    call putc
+    loop .l
+    pop ax
+    ret
+
+putdec:                             ; EAX unsigned decimal
+    push eax
+    push ebx
+    push edx
+    push si
+    mov si, V_NUM + 15
+    mov byte [gs:si], 0
+    mov ebx, 10
+.d:
+    xor edx, edx
+    div ebx
+    add dl, '0'
+    dec si
+    mov [gs:si], dl
+    test eax, eax
+    jnz .d
+    call puts_gs
+    pop si
+    pop edx
+    pop ebx
+    pop eax
+    ret
+
+puthex:                             ; EAX, CL = digits
+    push eax
+    push cx
+    push dx
+    movzx cx, cl
+    mov dx, cx
+    shl dx, 2
+.rot:                               ; bring the top requested digit to the top
+    cmp dx, 32
+    je .go
+    rol eax, 4
+    add dx, 4
+    jmp short .rot
+.go:
+    rol eax, 4
+    push eax
+    and al, 0x0F
+    add al, '0'
+    cmp al, '9'
+    jbe .ok
+    add al, 7
+.ok:
+    call putc
+    pop eax
+    loop .go
+    pop dx
+    pop cx
+    pop eax
+    ret
+
+cls:                                ; whole screen blank in A_BG
+    push ax
+    push cx
+    push di
+    push es
+    mov es, [gs:V_VSEG]
+    mov ah, A_BG
+    call xlat
+    mov al, ' '
+    xor di, di
+    mov cx, 2000
+    rep stosw
+    pop es
+    pop di
+    pop cx
+    pop ax
+    ret
+
+hline:                              ; row DH, columns DL.., CX cells of AL in V_ATTR
+    call goto_rc
+.l:
+    call putc
+    loop .l
+    ret
+
+frame:                              ; screen with top bar, title (SI) and help line (BX)
+    call cls
+    mov byte [gs:V_ATTR], A_BAR
+    mov dx, 0x0000
+    mov cx, 80
+    mov al, ' '
+    call hline
+    mov dx, 0x0001
+    call goto_rc
+    SAY " NCR System 3230 ", 0xFA, " Tools"
+    mov dx, 0x0032
+    call goto_rc
+    SAY "Enhanced by StevenC & Claude"
+    mov dx, 0x1800
+    mov cx, 80
+    mov al, ' '
+    call hline
+    mov dx, 0x1801
+    call goto_rc
+    push si
+    mov si, bx
+    call puts
+    pop si
+    mov byte [gs:V_ATTR], A_TITLE
+    mov dx, 0x0203
+    call goto_rc
+    call puts
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0303
+    mov cx, 74
+    mov al, 0xC4
+    call hline
+    ret
+
+label:                              ; row DH: label (SI) at column 3, value at column 25
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dl, 3
+    call goto_rc
+    call puts
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dl, 25
+    mov [gs:V_COL], dl
+    mov [gs:V_LMARG], dl
+    ret
+
+getkey:
+    xor ax, ax
+    int 0x16
+    ret
+
+wait_back:                          ; any key returns
+    call getkey
+    ret
+
+; ------------------------------------------------------------------ small helpers
+
+cmos_read:                          ; AL = register -> AL = value
+    pushf
+    cli
+    or al, 0x80
+    out 0x70, al
+    in al, 0x71
+    popf
+    ret
+
+chip_read:                          ; AL = chipset register -> AL = value
+    pushf
+    cli
+    out 0x22, al
+    in al, 0x24
+    popf
+    ret
+
+delay_ms:                           ; CX milliseconds, counted on port 61h refresh toggles
+    push ax
+    push cx
+    push dx
+.ms:
+    push cx
+    mov cx, 66
+    in al, 0x61
+    and al, 0x10
+    mov ah, al
+.t:
+    xor dx, dx
+.same:
+    in al, 0x61
+    and al, 0x10
+    cmp al, ah
+    jne .flip
+    dec dx
+    jnz .same
+.flip:
+    mov ah, al
+    loop .t
+    pop cx
+    loop .ms
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+tone:                               ; BX = PIT divisor, CX = milliseconds
+    push ax
+    mov al, 0xB6
+    out 0x43, al
+    mov al, bl
+    out 0x42, al
+    mov al, bh
+    out 0x42, al
+    in al, 0x61
+    or al, 3
+    out 0x61, al
+    call delay_ms
+    in al, 0x61
+    and al, 0xFC
+    out 0x61, al
+    pop ax
+    ret
+
+chime:                              ; C6 E6 G6 C7
+    push bx
+    push cx
+    mov bx, 1140
+    mov cx, 70
+    call tone
+    mov bx, 905
+    call tone
+    mov bx, 761
+    call tone
+    mov bx, 570
+    mov cx, 140
+    call tone
+    pop cx
+    pop bx
+    ret
+
+; ------------------------------------------------------------------ CPU
+
+gather_cpu:
+    pushad
+    mov byte [gs:V_CPUID], 0
+    mov dword [gs:V_SIG], 0
+    pushfd                          ; CPUID if the ID flag (bit 21) can be toggled
+    pop eax
+    mov ecx, eax
+    xor eax, 0x200000
+    push eax
+    popfd
+    pushfd
+    pop eax
+    push ecx
+    popfd
+    xor eax, ecx
+    test eax, 0x200000
+    jz .nocpuid
+    mov byte [gs:V_CPUID], 1
+    xor eax, eax
+    cpuid
+    mov [gs:V_VEND], ebx
+    mov [gs:V_VEND+4], edx
+    mov [gs:V_VEND+8], ecx
+    mov byte [gs:V_VEND+12], 0
+    mov eax, 1
+    cpuid
+    mov [gs:V_SIG], eax
+.nocpuid:
+    mov byte [gs:V_FPU], 0          ; FPU: FNINIT then FNSTSW must give 0
+    mov eax, cr0
+    test al, 0x0C                   ; EM or TS set: FPU instructions would trap
+    jnz .nofpu
+    mov word [gs:V_TMP], 0x5A5A
+    fninit
+    fnstsw [gs:V_TMP]
+    cmp byte [gs:V_TMP], 0
+    jne .nofpu
+    mov byte [gs:V_FPU], 1
+.nofpu:
+    call measure_mhz
+    popad
+    ret
+
+; Measure the core clock: 1000 x 32 "div bx" (24 clocks each on a 486) from RAM,
+; timed with PIT channel 2. Result (rounded to a standard speed when close)
+; in V_MHZV, 0 if the measurement makes no sense.
+measure_mhz:
+    pushad
+    push es
+    push ds
+    mov word [gs:V_MHZV], 0
+    mov ax, VARSEG                  ; copy the loop to RAM (ROM may be slow / uncached)
+    mov es, ax
+    mov di, V_TLOOP
+    mov si, tloop
+    mov cx, tloop_end - tloop
+    rep movsb
+    pushf
+    cli
+    in al, 0x61
+    and al, 0xFC
+    out 0x61, al
+    mov al, 0xB0                    ; channel 2, lo/hi, mode 0
+    out 0x43, al
+    mov al, 0xFF
+    out 0x42, al
+    out 0x42, al
+    in al, 0x61
+    or al, 1                        ; gate on: counting starts
+    out 0x61, al
+    xor dx, dx
+    mov ax, 1234
+    mov bx, 7
+    call VARSEG:V_TLOOP
+    mov al, 0x80                    ; latch channel 2
+    out 0x43, al
+    in al, 0x42
+    mov ah, al
+    in al, 0x42
+    xchg al, ah
+    mov bx, ax
+    in al, 0x61
+    and al, 0xFC
+    out 0x61, al
+    popf
+    mov cx, 0xFFFF
+    sub cx, bx                      ; elapsed ticks at 1.193182 MHz
+    cmp cx, 1500
+    jb .done                        ; implausibly fast: give up
+    movzx ecx, cx
+    mov eax, 9211365                ; 772000 clocks x 1.193182 x 10
+    xor edx, edx
+    div ecx                         ; EAX = MHz x 10
+    mov si, speeds                  ; snap to a standard speed within 6 %
+.snap:
+    mov bx, [cs:si]
+    add si, 2
+    test bx, bx
+    jz .raw
+    movzx ebx, bx
+    mov edx, eax
+    sub edx, ebx
+    jns .pos
+    neg edx
+.pos:
+    imul edx, edx, 100
+    imul ecx, ebx, 6
+    cmp edx, ecx
+    ja .snap
+    mov eax, ebx
+.raw:
+    add eax, 5
+    xor edx, edx
+    mov ecx, 10
+    div ecx
+    mov [gs:V_MHZV], ax
+.done:
+    pop ds
+    pop es
+    popad
+    ret
+speeds: dw 160, 200, 250, 330, 400, 500, 600, 660, 750, 800, 1000, 1200, 1330, 1500, 0
+
+tloop:                              ; copied to VARSEG:V_TLOOP and called far
+    mov cx, 1000
+.l:
+    times 32 div bx
+    dec cx
+    jnz .l
+    retf
+tloop_end:
+
+cpu_name:                           ; prints the processor description
+    cmp byte [gs:V_CPUID], 0
+    jne .cpuid
+    SAY "486"
+    mov si, s_dx
+    cmp byte [gs:V_FPU], 0
+    jne .p
+    mov si, s_sx
+.p:
+    call puts
+    SAY "-class (no CPUID)"
+    ret
+.cpuid:
+    mov eax, [gs:V_SIG]
+    mov bl, ah
+    and bl, 0x0F                    ; family
+    mov bh, al
+    shr bh, 4                       ; model
+    cmp dword [gs:V_VEND], 'Genu'
+    jne .amd
+    cmp bl, 4
+    jne .fam5
+    movzx si, bh
+    shl si, 1
+    mov si, [cs:intel486 + si]
+    call puts
+    jmp short .od
+.fam5:
+    cmp bl, 5
+    jne .generic
+    SAY "Intel Pentium"
+    jmp short .od
+.amd:
+    cmp dword [gs:V_VEND], 'Auth'
+    jne .generic
+    cmp bl, 4
+    jne .generic
+    movzx si, bh
+    shl si, 1
+    mov si, [cs:amd486 + si]
+    call puts
+    jmp short .od
+.generic:
+    mov si, V_VEND
+    call puts_gs
+.od:
+    test byte [gs:V_SIG+1], 0x10    ; type field 1 = OverDrive
+    jz .sig
+    SAY " OverDrive"
+.sig:
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "  (family "
+    movzx eax, bl
+    call putdec
+    SAY ", model "
+    movzx eax, bh
+    call putdec
+    SAY ", stepping "
+    mov eax, [gs:V_SIG]
+    and eax, 0x0F
+    call putdec
+    SAY ")"
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+
+s_dx: db "DX", 0
+s_sx: db "SX", 0
+i0: db "Intel 486DX", 0
+i2: db "Intel 486SX", 0
+i3: db "Intel 486DX2", 0
+i4: db "Intel 486SL", 0
+i5: db "Intel 486SX2", 0
+i7: db "Intel 486DX2 write-back", 0
+i8: db "Intel 486DX4", 0
+i9: db "Intel 486DX4 write-back", 0
+iq: db "Intel 486", 0
+intel486: dw i0, i0, i2, i3, i4, i5, iq, i7, i8, i9, iq, iq, iq, iq, iq, iq
+a3: db "AMD Am486DX2", 0
+a7: db "AMD Am486DX2 write-back", 0
+a8: db "AMD Am486DX4", 0
+a9: db "AMD Am486DX4 write-back", 0
+ae: db "AMD Am5x86", 0
+af: db "AMD Am5x86 write-back", 0
+aq: db "AMD 486", 0
+amd486: dw aq, aq, aq, a3, aq, aq, aq, a7, a8, a9, aq, aq, aq, aq, ae, af
+
+speed_value:                        ; "~66 MHz (measured)" or "not measured"
+    movzx eax, word [gs:V_MHZV]
+    test eax, eax
+    jz .none
+    mov al, 0xF7                    ; "about"
+    call putc
+    movzx eax, word [gs:V_MHZV]
+    call putdec
+    SAY " MHz", 1, A_DIM, " (measured)", 1, A_VALUE
+    ret
+.none:
+    SAY "not measured"
+    ret
+
+; ------------------------------------------------------------------ memory and cache facts
+
+base_kb:                            ; EAX = base memory in KB (BIOS data 40:13)
+    push es
+    mov ax, 0x40
+    mov es, ax
+    movzx eax, word [es:0x13]
+    pop es
+    ret
+
+ext_kb:                             ; EAX = extended memory found by POST (CMOS 30h/31h)
+    push bx
+    mov al, 0x31
+    call cmos_read
+    mov ah, al
+    mov al, 0x30
+    call cmos_read
+    movzx eax, ax
+    pop bx
+    ret
+
+l2_value:
+    mov al, 0x92
+    call chip_read
+    test al, 1
+    jz .off
+    mov al, 0x93
+    call chip_read
+    and al, 0x1F
+    mov si, s_l2_256
+    cmp al, 0x18
+    je .p
+    mov si, s_l2_128
+    cmp al, 0x1C
+    je .p
+    mov si, s_l2_64
+    cmp al, 0x1E
+    je .p
+    mov si, s_l2_32
+.p:
+    call puts
+    ret
+.off:
+    SAY "not installed or switched off"
+    ret
+s_l2_256: db "256 KB, on", 0
+s_l2_128: db "128 KB, on", 0
+s_l2_64:  db "64 KB, on", 0
+s_l2_32:  db "32 KB, on", 0
+
+l1_value:
+    mov eax, cr0
+    test eax, 0x40000000
+    jnz .off
+    SAY "on (internal, write-through)"
+    ret
+.off:
+    SAY "off"
+    ret
+
+ports_line:                         ; COM and LPT base addresses from 40:00
+    push es
+    push bx
+    mov ax, 0x40
+    mov es, ax
+    xor bx, bx
+    mov cx, 4
+.com:
+    mov ax, [es:bx]
+    test ax, ax
+    jz .nc
+    SAY "COM"
+    mov al, bl
+    shr al, 1
+    add al, '1'
+    call putc
+    mov al, ' '
+    call putc
+    movzx eax, word [es:bx]
+    push cx
+    mov cl, 3
+    call puthex
+    pop cx
+    SAY "  "
+.nc:
+    add bx, 2
+    loop .com
+    mov bx, 8
+    mov cx, 3
+.lpt:
+    mov ax, [es:bx]
+    test ax, ax
+    jz .nl
+    SAY "LPT"
+    mov al, bl
+    sub al, 8
+    shr al, 1
+    add al, '1'
+    call putc
+    mov al, ' '
+    call putc
+    movzx eax, word [es:bx]
+    push cx
+    mov cl, 3
+    call puthex
+    pop cx
+    SAY "  "
+.nl:
+    add bx, 2
+    loop .lpt
+    pop bx
+    pop es
+    ret
+
+clock_value:                        ; RTC date and time, battery state
+    mov ah, 4
+    int 0x1A
+    jc .bad
+    push dx
+    mov al, ch
+    call bcd2
+    mov al, cl
+    call bcd2
+    mov al, '-'
+    call putc
+    pop dx
+    push dx
+    mov al, dh
+    call bcd2
+    mov al, '-'
+    call putc
+    pop dx
+    mov al, dl
+    call bcd2
+    mov al, ' '
+    call putc
+    mov ah, 2
+    int 0x1A
+    jc .bad
+    mov al, ch
+    call bcd2
+    mov al, ':'
+    call putc
+    mov al, cl
+    call bcd2
+    mov al, ':'
+    call putc
+    mov al, dh
+    call bcd2
+.bat:
+    mov al, 0x0D
+    call cmos_read
+    test al, 0x80
+    jz .lost
+    SAY 1, A_OK, "  battery OK", 1, A_VALUE
+    ret
+.lost:
+    SAY 1, A_BAD, "  battery lost", 1, A_VALUE
+    ret
+.bad:
+    SAY "not running"
+    jmp short .bat
+
+bcd2:                               ; AL as two BCD digits
+    push ax
+    shr al, 4
+    add al, '0'
+    call putc
+    pop ax
+    and al, 0x0F
+    add al, '0'
+    call putc
+    ret
+
+video_value:
+    push es
+    mov ax, 0x40
+    mov es, ax
+    mov al, [es:0x49]
+    pop es
+    mov si, s_vcol
+    cmp byte [gs:V_MONO], 0
+    je .p
+    mov si, s_vmono
+.p:
+    call puts
+    SAY ", BIOS at "
+    mov ax, 0xC000
+    call rom_at
+    jnc .seg
+    mov ax, 0xE000
+.seg:
+    movzx eax, ax
+    mov cl, 4
+    call puthex
+    ret
+s_vcol:  db "VGA colour", 0
+s_vmono: db "monochrome", 0
+
+rom_at:                             ; CF=0 if a 55AA option ROM header sits at AX:0
+    push es
+    mov es, ax
+    cmp word [es:0], 0xAA55
+    pop es
+    je .yes
+    stc
+    ret
+.yes:
+    clc
+    ret
+
+; ------------------------------------------------------------------ IDE
+
+; Identify primary-channel device BL (0 master, 1 slave) into GS:V_IDBUF.
+; AL = 0 none, 1 ATA disk, 2 ATAPI device.
+ide_identify:
+    push bx
+    push cx
+    push dx
+    push di
+    push es
+    mov dx, 0x3F6
+    mov al, 0x0A                    ; no interrupts while we probe
+    out dx, al
+    mov dx, 0x1F6
+    mov al, bl
+    shl al, 4
+    or al, 0xA0
+    out dx, al
+    mov dx, 0x1F7
+    in al, dx
+    in al, dx
+    in al, dx
+    in al, dx
+    in al, dx
+    cmp al, 0xFF                    ; floating bus: nothing there
+    je .none
+    call ide_wait_idle
+    jc .none
+    mov al, 0xEC                    ; IDENTIFY DEVICE
+    out dx, al
+    call ide_wait_data
+    jnc .ata
+    mov dx, 0x1F4                   ; aborted: ATAPI shows its signature
+    in al, dx
+    mov ah, al
+    inc dx
+    in al, dx
+    cmp ax, 0x14EB
+    jne .none
+    mov dx, 0x1F7
+    mov al, 0xA1                    ; IDENTIFY PACKET DEVICE
+    out dx, al
+    call ide_wait_data
+    jc .none
+    call ide_read
+    mov al, 2
+    jmp short .out
+.ata:
+    call ide_read
+    mov al, 1
+    jmp short .out
+.none:
+    xor al, al
+.out:
+    push ax
+    mov dx, 0x1F7
+    in al, dx                       ; clear any pending device interrupt
+    push ds
+    mov ax, 0x40
+    mov ds, ax
+    mov al, [0x76]
+    and al, 0x0B
+    mov dx, 0x3F6
+    out dx, al
+    and byte [0x8E], 0x7F           ; no stale "IRQ 14 seen" flag for INT 13h
+    pop ds
+    pop ax
+    pop es
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+ide_wait_idle:                      ; DX = 1F7. CF=1 if still busy after ~0.2 s
+    push cx
+    push bx
+    mov bx, 4
+.o:
+    xor cx, cx
+.l:
+    in al, dx
+    test al, 0x80
+    jz .ok
+    loop .l
+    dec bx
+    jnz .o
+    stc
+    jmp short .x
+.ok:
+    clc
+.x:
+    pop bx
+    pop cx
+    ret
+
+ide_wait_data:                      ; CF=0 when DRQ (data ready), CF=1 on error/timeout
+    push cx
+    push bx
+    in al, dx                       ; 400 ns settle
+    in al, dx
+    in al, dx
+    in al, dx
+    mov bx, 2
+.o:
+    xor cx, cx
+.l:
+    in al, dx
+    test al, 0x80
+    jnz .n
+    test al, 0x01
+    jnz .bad
+    test al, 0x08
+    jnz .ok
+.n:
+    loop .l
+    dec bx
+    jnz .o
+.bad:
+    stc
+    jmp short .x
+.ok:
+    clc
+.x:
+    pop bx
+    pop cx
+    ret
+
+ide_read:                           ; 256 words into GS:V_IDBUF
+    push ax
+    push cx
+    push dx
+    push di
+    push es
+    mov ax, VARSEG
+    mov es, ax
+    mov di, V_IDBUF
+    mov dx, 0x1F0
+    mov cx, 256
+    rep insw
+    pop es
+    pop di
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+; Probe master and slave; fill V_IDTYPE, V_IDNAME, V_IDFW and V_IDMB.
+ide_scan:
+    pushad
+    xor bx, bx
+.dev:
+    call ide_identify
+    mov [gs:V_IDTYPE + bx], al
+    test al, al
+    jz .next
+    imul di, bx, 41
+    add di, V_IDNAME
+    mov si, V_IDBUF + 54            ; model: words 27-46
+    mov cx, 40
+    call idstr
+    imul di, bx, 9
+    add di, V_IDFW
+    mov si, V_IDBUF + 46            ; firmware: words 23-26
+    mov cx, 8
+    call idstr
+    mov eax, [gs:V_IDBUF + 120]     ; LBA sectors (words 60-61)
+    test byte [gs:V_IDBUF + 99], 2  ; LBA supported (word 49 bit 9)
+    jnz .lba
+    movzx eax, word [gs:V_IDBUF + 2]
+    movzx ecx, word [gs:V_IDBUF + 6]
+    imul eax, ecx
+    movzx ecx, word [gs:V_IDBUF + 12]
+    imul eax, ecx
+.lba:
+    shr eax, 11                     ; sectors -> MB
+    mov si, bx
+    shl si, 2
+    mov [gs:V_IDMB + si], eax
+.next:
+    inc bx
+    cmp bx, 2
+    jb .dev
+    popad
+    ret
+
+idstr:                              ; byte-swapped ID string GS:SI (CX bytes) -> GS:DI, trimmed
+    push di
+.l:
+    mov ax, [gs:si]
+    xchg al, ah
+    mov [gs:di], ax
+    add si, 2
+    add di, 2
+    sub cx, 2
+    jnz .l
+    mov byte [gs:di], 0
+    pop si                          ; trim trailing blanks
+.t:
+    dec di
+    cmp di, si
+    jb .done
+    cmp byte [gs:di], ' '
+    jne .done
+    mov byte [gs:di], 0
+    jmp short .t
+.done:
+    ret
+
+ide_line:                           ; BX = device: print what is there
+    mov al, [gs:V_IDTYPE + bx]
+    test al, al
+    jnz .some
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "none"
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+.some:
+    push ax
+    imul si, bx, 41
+    add si, V_IDNAME
+    call puts_gs
+    pop ax
+    mov byte [gs:V_ATTR], A_DIM
+    cmp al, 2
+    je .atapi
+    SAY "  (disk, "
+    mov si, bx
+    shl si, 2
+    mov eax, [gs:V_IDMB + si]
+    call putdec
+    SAY " MB)"
+    jmp short .x
+.atapi:
+    SAY "  (CD-ROM / ATAPI)"
+.x:
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+
+; ------------------------------------------------------------------ floppy names
+
+floppy_name:                        ; AL = CMOS type nibble
+    movzx si, al
+    cmp si, 6
+    jbe .ok
+    xor si, si
+.ok:
+    shl si, 1
+    mov si, [cs:fdnames + si]
+    call puts
+    ret
+f0: db "none", 0
+f1: db "360 KB 5.25", 0x22, 0
+f2: db "1.2 MB 5.25", 0x22, 0
+f3: db "720 KB 3.5", 0x22, 0
+f4: db "1.44 MB 3.5", 0x22, 0
+f5: db "2.88 MB 3.5", 0x22, 0
+fdnames: dw f0, f1, f2, f3, f4, f5, f5
+
+; ------------------------------------------------------------------ pages
+
+page_menu:
+    mov byte [gs:V_SEL], 0
+.draw:
+    mov si, t_menu
+    mov bx, h_menu
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0403
+    call goto_rc
+    SAY "Information and tests for this machine. Nothing here changes Setup."
+    xor cx, cx
+.item:
+    mov dh, cl
+    add dh, 6
+    mov dl, 20
+    call goto_rc
+    mov byte [gs:V_ATTR], A_VALUE
+    cmp cl, [gs:V_SEL]
+    jne .n
+    mov byte [gs:V_ATTR], A_SEL
+.n:
+    mov si, cx
+    shl si, 1
+    mov si, [cs:menu_items + si]
+    push cx
+    mov al, ' '
+    call putc
+    call puts
+.pad:
+    cmp byte [gs:V_COL], 60
+    jae .padded
+    mov al, ' '
+    call putc
+    jmp short .pad
+.padded:
+    pop cx
+    inc cx
+    cmp cx, MENU_N
+    jb .item
+.key:
+    call getkey
+    cmp ah, 0x01                    ; Esc: continue booting
+    je .exit
+    cmp ah, 0x48
+    je .up
+    cmp ah, 0x50
+    je .down
+    cmp al, 0x0D
+    je .open
+    cmp al, '1'
+    jb .key
+    cmp al, '0' + MENU_N
+    ja .key
+    sub al, '1'
+    mov [gs:V_SEL], al
+    jmp short .open
+.up:
+    cmp byte [gs:V_SEL], 0
+    je .draw
+    dec byte [gs:V_SEL]
+    jmp .draw
+.down:
+    cmp byte [gs:V_SEL], MENU_N - 1
+    jae .draw
+    inc byte [gs:V_SEL]
+    jmp .draw
+.open:
+    movzx si, byte [gs:V_SEL]
+    cmp si, MENU_N - 1
+    je .exit
+    shl si, 1
+    call [cs:menu_pages + si]
+    jc .exit                        ; a page asked to leave the menu (boot menu choice)
+    jmp .draw
+.exit:
+    ret
+
+MENU_N equ 8
+menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8
+menu_pages: dw page_sysinfo, page_drives, page_memmap, page_memtest, page_cmos, page_fdtest, page_boot_menu
+m1: db "1  System information", 0
+m2: db "2  Drives and devices", 0
+m3: db "3  Memory map and option ROMs", 0
+m4: db "4  Memory test", 0
+m5: db "5  CMOS contents", 0
+m6: db "6  Floppy drive test (NCR built-in)", 0
+m7: db "7  Boot menu", 0
+m8: db "8  Continue booting", 0
+t_menu: db "Tools", 0
+h_menu: db 0x18, 0x19, " Select   Enter Open   1-8 Shortcut   Esc Continue booting", 0
+h_back: db "Any key returns to the menu", 0
+
+page_sysinfo:
+    mov si, t_sys
+    mov bx, h_back
+    call frame
+    mov dh, 5
+    mov si, l_cpu
+    call label
+    call cpu_name
+    mov dh, 6
+    mov si, l_speed
+    call label
+    call speed_value
+    mov dh, 7
+    mov si, l_fpu
+    call label
+    mov si, s_fpu_yes
+    cmp byte [gs:V_FPU], 0
+    jne .f
+    mov si, s_fpu_no
+.f:
+    call puts
+    mov dh, 8
+    mov si, l_l1
+    call label
+    call l1_value
+    mov dh, 9
+    mov si, l_l2
+    call label
+    call l2_value
+    mov dh, 11
+    mov si, l_base
+    call label
+    call base_kb
+    call putdec
+    SAY " KB"
+    mov dh, 12
+    mov si, l_ext
+    call label
+    call ext_kb
+    push eax
+    call putdec
+    SAY " KB", 1, A_DIM, "  (total "
+    pop eax
+    add eax, 1023
+    shr eax, 10
+    inc eax
+    call putdec
+    SAY " MB)", 1, A_VALUE
+    mov dh, 13
+    mov si, l_shadow
+    call label
+    call shadow_value
+    mov dh, 15
+    mov si, l_ports
+    call label
+    call ports_line
+    mov dh, 16
+    mov si, l_video
+    call label
+    call video_value
+    mov dh, 17
+    mov si, l_clock
+    call label
+    call clock_value
+    mov dh, 19
+    mov si, l_bios
+    call label
+    SAY "NCR 517-0000672 v2.03.00 (10/08/93), Enhanced Edition"
+    mov dh, 20
+    mov si, l_tools
+    call label
+    SAY "E800:0000, "
+    mov ax, EXT_SEG
+    mov es, ax
+    movzx eax, word [es:4]
+    call putdec
+    SAY " bytes, checksum OK"
+    call wait_back
+    clc
+    ret
+
+shadow_value:
+    mov al, 0x46
+    call cmos_read
+    mov ah, al
+    mov al, 0x47
+    call cmos_read
+    test ah, ah
+    jnz .some
+    test al, 0x90
+    jnz .some
+    SAY "none"
+    ret
+.some:
+    push ax
+    xor cx, cx
+    mov bx, 0xC000
+.b:
+    test ah, 1
+    jz .nb
+    movzx eax, bx
+    push cx
+    mov cl, 4
+    call puthex
+    pop cx
+    mov al, ' '
+    call putc
+.nb:
+    shr ah, 1
+    add bx, 0x400
+    inc cx
+    cmp cx, 8
+    jb .b
+    pop ax
+    test al, 0x10
+    jz .ne
+    SAY "E000 "
+.ne:
+    test al, 0x80
+    jz .x
+    SAY 1, A_DIM, "(video copied to C000)", 1, A_VALUE
+.x:
+    ret
+
+t_sys: db "System information", 0
+l_cpu: db "Processor", 0
+l_speed: db "Clock speed", 0
+l_fpu: db "Maths coprocessor", 0
+l_l1: db "Level 1 cache", 0
+l_l2: db "Level 2 cache", 0
+l_base: db "Base memory", 0
+l_ext: db "Extended memory", 0
+l_shadow: db "Shadow RAM", 0
+l_ports: db "Serial / parallel", 0
+l_video: db "Video", 0
+l_clock: db "Real-time clock", 0
+l_bios: db "BIOS", 0
+l_tools: db "Tools extension", 0
+s_fpu_yes: db "present", 0
+s_fpu_no: db "not present", 0
+
+page_drives:
+    mov si, t_drives
+    mov bx, h_back
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0403
+    call goto_rc
+    SAY "Asking the IDE devices for their names..."
+    call ide_scan
+    mov dx, 0x0403
+    mov cx, 60
+    mov byte [gs:V_ATTR], A_BG
+    mov al, ' '
+    call hline
+    mov dh, 5
+    mov si, l_fda
+    call label
+    mov al, 0x10
+    call cmos_read
+    push ax
+    shr al, 4
+    call floppy_name
+    mov dh, 6
+    mov si, l_fdb
+    call label
+    pop ax
+    and al, 0x0F
+    call floppy_name
+    mov dh, 8
+    mov si, l_hdc
+    call label
+    mov dl, 0x80
+    call bios_disk
+    mov dh, 9
+    mov si, l_hdd
+    call label
+    mov dl, 0x81
+    call bios_disk
+    mov dh, 11
+    mov si, l_ide0
+    call label
+    xor bx, bx
+    call ide_line
+    mov dh, 12
+    xor bx, bx
+    call fw_line
+    mov dh, 14
+    mov si, l_ide1
+    call label
+    mov bx, 1
+    call ide_line
+    mov dh, 15
+    mov bx, 1
+    call fw_line
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1103
+    call goto_rc
+    SAY "Sizes are as the drive reports them. This BIOS reaches at most 504 MB.", 3
+    SAY "A CD-ROM is used from DOS with a driver, e.g. OAKCDROM.SYS and MSCDEX."
+    call wait_back
+    clc
+    ret
+
+fw_line:                            ; row DH: firmware line, only when a device answered
+    cmp byte [gs:V_IDTYPE + bx], 0
+    je .x
+    mov si, l_fw
+    call label
+    mov byte [gs:V_ATTR], A_DIM
+    imul si, bx, 9
+    add si, V_IDFW
+    call puts_gs
+.x:
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+
+bios_disk:                          ; DL = 80h/81h: geometry INT 13h reports
+    push dx
+    mov ah, 8
+    int 0x13
+    pop ax                          ; AL = drive asked for
+    jc .none
+    sub al, 0x80
+    cmp al, dl                      ; DL = number of hard disks
+    jae .none
+    movzx eax, cx                   ; cylinders = CH + (CL bits 6-7 << 2) + 1
+    xchg al, ah
+    shr ah, 6
+    inc eax
+    and eax, 0x3FF
+    jnz .c
+    mov eax, 1024
+.c:
+    push eax
+    call putdec
+    mov al, '/'
+    call putc
+    movzx eax, dh
+    inc eax
+    push eax
+    call putdec
+    mov al, '/'
+    call putc
+    and cx, 0x3F
+    movzx eax, cx
+    push eax
+    call putdec
+    SAY 1, A_DIM, "  (cylinders/heads/sectors, "
+    pop eax
+    pop ebx
+    imul eax, ebx
+    pop ebx
+    imul eax, ebx
+    shr eax, 11
+    call putdec
+    SAY " MB)", 1, A_VALUE
+    ret
+.none:
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "not configured"
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+
+t_drives: db "Drives and devices", 0
+l_fda: db "Floppy A:", 0
+l_fdb: db "Floppy B:", 0
+l_hdc: db "Hard disk C: (BIOS)", 0
+l_hdd: db "Hard disk D: (BIOS)", 0
+l_ide0: db "IDE primary master", 0
+l_ide1: db "IDE primary slave", 0
+l_fw: db "  firmware", 0
+
+page_memmap:
+    mov si, t_map
+    mov bx, h_back
+    call frame
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Address  Size     Contents"
+    mov byte [gs:V_ROW], 6
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0603
+    call goto_rc
+    SAY "00000    "
+    call base_kb
+    call putdec
+    SAY " KB   Conventional RAM"
+    mov dx, 0x0703
+    call goto_rc
+    SAY "A0000    128 KB   Video memory"
+    mov dh, 8
+    mov ax, 0xC000
+.scan:
+    call rom_at
+    jc .next
+    push ax
+    mov dl, 3
+    call goto_rc
+    movzx eax, ax
+    mov cl, 4
+    call puthex
+    mov al, '0'
+    call putc
+    SAY "    "
+    pop ax
+    push ax
+    push es
+    mov es, ax
+    movzx eax, byte [es:2]
+    shr eax, 1                      ; 512-byte units -> KB
+    call putdec
+    SAY " KB    "
+    call rom_name
+    pop es
+    pop ax
+    inc dh
+.next:
+    add ax, 0x80
+    cmp ax, 0xE800
+    jb .scan
+    mov dl, 3
+    call goto_rc
+    SAY "E8000    32 KB    NCR 3230 Tools (this program)"
+    inc dh
+    mov dl, 3
+    call goto_rc
+    SAY "F0000    64 KB    System BIOS 517-0000672 v2.03.00"
+    inc dh
+    mov dl, 3
+    call goto_rc
+    SAY "100000   "
+    call ext_kb
+    call putdec
+    SAY " KB   Extended RAM"
+    add dh, 2
+    mov si, l_shadow
+    call label
+    call shadow_value
+    call wait_back
+    clc
+    ret
+
+rom_name:                           ; ES = ROM segment: first readable text, up to 40 chars
+    push si
+    push cx
+    mov si, 6
+.find:
+    cmp si, 0x180
+    jae .none
+    mov cx, si
+.run:
+    mov al, [es:si]
+    cmp al, 0x20
+    jb .short
+    cmp al, 0x7E
+    ja .short
+    inc si
+    jmp short .run
+.short:
+    mov ax, si
+    sub ax, cx
+    cmp ax, 10
+    jae .found
+    inc si
+    jmp short .find
+.found:
+    mov si, cx
+.lead:                              ; skip leading punctuation
+    mov al, [es:si]
+    cmp al, '0'
+    jae .go
+    inc si
+    jmp short .lead
+.go:
+    mov cx, 40
+.p:
+    mov al, [es:si]
+    cmp al, 0x20
+    jb .done
+    cmp al, 0x7E
+    ja .done
+    call putc
+    inc si
+    loop .p
+    jmp short .done
+.none:
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "option ROM"
+    mov byte [gs:V_ATTR], A_VALUE
+.done:
+    pop cx
+    pop si
+    ret
+
+t_map: db "Memory map and option ROMs", 0
+
+page_cmos:
+    mov si, t_cmos
+    mov bx, h_back
+    call frame
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0509
+    call goto_rc
+    xor cx, cx
+.hdr:
+    mov eax, ecx
+    push cx
+    mov cl, 1
+    call puthex
+    pop cx
+    SAY "  "
+    inc cx
+    cmp cx, 16
+    jb .hdr
+    xor bx, bx                      ; register
+.row:
+    mov dh, bl
+    shr dh, 4
+    add dh, 6
+    mov dl, 3
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    movzx eax, bl
+    mov cl, 2
+    call puthex
+    SAY "h   "
+.cell:
+    mov al, bl
+    call cmos_read
+    mov byte [gs:V_ATTR], A_VALUE
+    test bl, 0xF0
+    jnz .h
+    mov byte [gs:V_ATTR], A_DIM     ; clock / status registers
+.h:
+    movzx eax, al
+    mov cl, 2
+    call puthex
+    mov al, ' '
+    call putc
+    inc bl
+    test bl, 0x0F
+    jnz .cell
+    cmp bl, 0x80
+    jb .row
+    ; decoded facts
+    mov dh, 15
+    mov si, l_csum
+    call label
+    xor bx, bx                      ; sum 10h-2Dh
+    mov cl, 0x10
+.s:
+    mov al, cl
+    call cmos_read
+    movzx ax, al
+    add bx, ax
+    inc cl
+    cmp cl, 0x2E
+    jb .s
+    mov al, 0x2E
+    call cmos_read
+    mov ah, al
+    mov al, 0x2F
+    call cmos_read
+    call ok_bad
+    mov dh, 16
+    mov si, l_ncsum
+    call label
+    xor bx, bx                      ; sum 44h-47h
+    mov cl, 0x44
+.s2:
+    mov al, cl
+    call cmos_read
+    movzx ax, al
+    add bx, ax
+    inc cl
+    cmp cl, 0x48
+    jb .s2
+    mov al, 0x7E
+    call cmos_read
+    mov ah, al
+    mov al, 0x7F
+    call cmos_read
+    call ok_bad
+    mov dh, 17
+    mov si, l_batt
+    call label
+    mov al, 0x0D
+    call cmos_read
+    mov si, s_ok
+    test al, 0x80
+    jnz .b
+    mov si, s_lost
+.b:
+    call puts
+    mov dh, 18
+    mov si, l_fancy
+    call label
+    mov al, 0x48
+    call cmos_read
+    mov si, s_on
+    cmp al, 0xA5
+    jne .f
+    mov si, s_off
+.f:
+    call puts
+    mov dh, 19
+    mov si, l_type1
+    call label
+    xor bx, bx
+    mov cl, 0x72
+.u:
+    mov al, cl
+    call cmos_read
+    movzx ax, al
+    add bx, ax
+    inc cl
+    cmp cl, 0x7C
+    jb .u
+    mov al, 0x7C
+    call cmos_read
+    test bx, bx
+    jz .unset
+    cmp al, bl
+    jne .unset
+    mov al, 0x73
+    call cmos_read
+    mov ah, al
+    mov al, 0x72
+    call cmos_read
+    movzx eax, ax
+    call putdec
+    mov al, '/'
+    call putc
+    mov al, 0x74
+    call cmos_read
+    movzx eax, al
+    call putdec
+    mov al, '/'
+    call putc
+    mov al, 0x7B
+    call cmos_read
+    movzx eax, al
+    call putdec
+    SAY 1, A_DIM, "  (set by USERHDD)", 1, A_VALUE
+    jmp short .w
+.unset:
+    SAY "not set"
+.w:
+    call wait_back
+    clc
+    ret
+
+ok_bad:                             ; AX = stored, BX = computed
+    push ax
+    SAY "stored "
+    movzx eax, ax
+    mov cl, 4
+    call puthex
+    SAY ", computed "
+    movzx eax, bx
+    call puthex
+    pop ax
+    cmp ax, bx
+    jne .bad
+    SAY 1, A_OK, "  OK", 1, A_VALUE
+    ret
+.bad:
+    SAY 1, A_BAD, "  does not match", 1, A_VALUE
+    ret
+
+t_cmos: db "CMOS contents (00h-7Fh)", 0
+l_csum: db "Checksum 10h-2Dh", 0
+l_ncsum: db "NCR checksum 44h-47h", 0
+l_batt: db "Battery (reg. D)", 0
+l_fancy: db "Fancy boot (48h)", 0
+l_type1: db "Disk type 1 (72h-7Ch)", 0
+s_ok: db "OK", 0
+s_lost: db "power was lost", 0
+s_on: db "on", 0
+s_off: db "off", 0
+
+page_fdtest:
+    mov si, t_fd
+    mov bx, h_fd
+    call frame
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0603
+    call goto_rc
+    SAY "This runs NCR's own floppy drive test, built into the BIOS (in the", 3
+    SAY "stock BIOS it hides behind Ctrl-D at the end of POST).", 3, 3
+    SAY 1, A_BAD, "Its format and write tests destroy the data on the test disk.", 3
+    SAY 1, A_VALUE, "Use a scratch disk. Leave the test with its EXIT DISK TEST item.", 3, 3
+    SAY 1, A_TITLE, "Press Y to start, any other key to go back."
+    call getkey
+    or al, 0x20
+    cmp al, 'y'
+    jne .x
+    call 0xF000:G_FDTEST
+    mov ax, 0x0003
+    cmp byte [gs:V_MONO], 0
+    je .m
+    mov al, 7
+.m:
+    int 0x10
+    mov ah, 1
+    mov cx, 0x2000
+    int 0x10
+.x:
+    clc
+    ret
+t_fd: db "Floppy drive test", 0
+h_fd: db "Y Start   any other key Back", 0
+
+; ------------------------------------------------------------------ boot menu
+
+page_boot_menu:                     ; from the Tools menu: CF=1 leaves Tools after a choice
+    call page_boot
+    ret
+
+page_boot:                          ; CF=1 if a device was chosen
+    mov si, t_boot
+    mov bx, h_boot
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Boot once from:"
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0705
+    call goto_rc
+    SAY "1  Floppy disk A:", 3, 3
+    SAY "2  Hard disk C:", 3, 3
+    SAY "Esc  Normal boot order"
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0E03
+    call goto_rc
+    SAY "The choice applies to this boot only; Setup is not changed."
+.k:
+    call getkey
+    cmp ah, 0x01
+    je .none
+    cmp al, '1'
+    je .a
+    cmp al, '2'
+    je .c
+    jmp short .k
+.a:
+    xor al, al
+    jmp short .set
+.c:
+    mov al, 0x80
+.set:
+    push ds
+    push 0
+    pop ds
+    mov word [0x4F0], BOOT_MAGIC
+    mov [0x4F2], al
+    pop ds
+    stc
+    ret
+.none:
+    clc
+    ret
+t_boot: db "Boot menu", 0
+h_boot: db "1-2 Choose   Esc Normal boot order", 0
+
+; INT 19h: if the boot menu left a choice, try that device once.
+boot_override:
+    push ds
+    push 0
+    pop ds
+    cmp word [0x4F0], BOOT_MAGIC
+    jne .no
+    mov dl, [0x4F2]
+    mov word [0x4F0], 0
+    mov si, 3
+.try:
+    xor ax, ax
+    int 0x13
+    push 0
+    pop es
+    mov bx, 0x7C00
+    mov ax, 0x0201
+    mov cx, 1
+    xor dh, dh
+    int 0x13
+    jnc .read
+    dec si
+    jnz .try
+    jmp short .fail
+.read:
+    cmp dl, 0x80
+    jb .go
+    cmp word [0x7DFE], 0xAA55
+    jne .fail
+.go:
+    add sp, 2                       ; boot sectors expect DS = ES = 0
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    jmp 0x0000:0x7C00               ; DL = boot drive
+.fail:
+    push cs
+    pop ds
+    mov si, s_bootfail
+.p:
+    lodsb
+    or al, al
+    jz .no
+    mov ah, 0x0E
+    mov bx, 7
+    int 0x10
+    jmp short .p
+.no:
+    pop ds
+    ret
+s_bootfail: db 13, 10, "Boot menu: that drive did not boot, using the normal order.", 13, 10, 0
+
+; ------------------------------------------------------------------ memory test
+
+page_memtest:
+    mov si, t_mem
+    mov bx, h_mem1
+    call frame
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Tests every byte of RAM except the first 64 KB, with three patterns:", 3
+    SAY "each address holding its own address, a 55h/AAh checkerboard (both ways)", 3
+    SAY "and all zeros / all ones. It runs until you press Esc.", 3, 3
+    SAY 1, A_LABEL, "Conventional  ", 1, A_VALUE, "64 KB - "
+    call base_kb
+    call putdec
+    SAY " KB", 3
+    SAY 1, A_LABEL, "Extended      ", 1, A_VALUE, "1 MB - "
+    call ext_kb
+    add eax, 1024
+    call putdec
+    SAY " KB", 3, 3
+    SAY 1, A_TITLE, "Press Enter to start, Esc to go back."
+.k:
+    call getkey
+    cmp ah, 0x01
+    je .back
+    cmp al, 0x0D
+    jne .k
+    call memtest_run
+.back:
+    clc
+    ret
+
+memtest_run:
+    mov si, t_mem
+    mov bx, h_mem2
+    call frame
+    call flat_on
+    call a20_on
+    mov dword [gs:V_ERRS], 0
+    mov word [gs:V_PASS], 0
+    mov byte [gs:V_NLOG], 0
+    mov byte [gs:V_STOP], 0
+    call a20_check
+    jnc .pass
+    mov byte [gs:V_ATTR], A_BAD
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Gate A20 did not open: only conventional memory is tested."
+.pass:
+    inc word [gs:V_PASS]
+    xor bp, bp                      ; test number 0..4
+.test:
+    mov ax, bp
+    mov [gs:V_TEST], al
+    call base_kb                    ; conventional: 64 KB .. base
+    shl eax, 10
+    mov dword [gs:V_START], 0x10000
+    mov [gs:V_END], eax
+    call sweep
+    cmp byte [gs:V_STOP], 0
+    jne .stop
+    call a20_check
+    jc .noext
+    call ext_kb
+    shl eax, 10
+    add eax, 0x100000
+    mov dword [gs:V_START], 0x100000
+    mov [gs:V_END], eax
+    call sweep
+    cmp byte [gs:V_STOP], 0
+    jne .stop
+.noext:
+    inc bp
+    cmp bp, 5
+    jb .test
+    jmp .pass
+.stop:
+    call a20_off
+    mov byte [gs:V_ATTR], A_TITLE
+    mov dx, 0x1503
+    call goto_rc
+    SAY "Stopped. ", 1, A_VALUE
+    movzx eax, word [gs:V_PASS]
+    dec eax
+    call putdec
+    SAY " full pass(es), "
+    mov eax, [gs:V_ERRS]
+    call putdec
+    SAY " error(s). Press any key."
+    call getkey
+    ret
+
+; Write the whole range with the current test's pattern, then verify it,
+; in 64 KB steps, updating the screen and watching for Esc.
+sweep:
+    mov byte [gs:V_TMP+3], 0        ; phase 0 = write, 1 = verify
+.phase:
+    mov edi, [gs:V_START]
+.chunk:
+    cmp edi, [gs:V_END]
+    jae .phase_done
+    call status_line
+    mov ecx, 16384                  ; dwords in 64 KB
+    mov eax, [gs:V_END]
+    sub eax, edi
+    shr eax, 2
+    cmp ecx, eax
+    jbe .n
+    mov ecx, eax
+.n:
+    cmp byte [gs:V_TMP+3], 0
+    jne .verify
+.write:
+    call pattern
+    mov [fs:edi], eax
+    add edi, 4
+    dec ecx
+    jnz .write
+    jmp short .after
+.verify:
+    call pattern
+    cmp [fs:edi], eax
+    jne .error
+.vnext:
+    add edi, 4
+    dec ecx
+    jnz .verify
+.after:
+    mov ah, 1
+    int 0x16
+    jz .chunk
+    xor ax, ax
+    int 0x16
+    cmp ah, 0x01
+    jne .chunk
+    mov byte [gs:V_STOP], 1
+    ret
+.error:
+    call log_error
+    jmp short .vnext
+.phase_done:
+    cmp byte [gs:V_TMP+3], 0
+    jne .done
+    mov byte [gs:V_TMP+3], 1
+    jmp .phase
+.done:
+    ret
+
+pattern:                            ; EAX = expected dword at EDI for the current test
+    movzx ax, byte [gs:V_TEST]
+    cmp al, 0
+    jne .p1
+    mov eax, edi                    ; own address
+    ret
+.p1:
+    cmp al, 3
+    jae .solid
+    mov eax, edi                    ; checkerboard by dword
+    shr eax, 2
+    and eax, 1
+    neg eax                         ; 0 or FFFFFFFF
+    xor eax, 0x55555555
+    cmp byte [gs:V_TEST], 2
+    jne .r
+    not eax
+.r:
+    ret
+.solid:
+    mov eax, 0
+    cmp byte [gs:V_TEST], 3
+    je .r
+    dec eax
+    ret
+
+log_error:                          ; EDI, expected EAX, actual at FS:EDI
+    pushad
+    inc dword [gs:V_ERRS]
+    movzx bx, byte [gs:V_NLOG]
+    cmp bx, 6
+    jb .room
+    mov bx, 5                       ; keep the latest six: shift up
+    push ds
+    push gs
+    pop ds
+    push es
+    push gs
+    pop es
+    mov si, V_LOG + 12
+    mov di, V_LOG
+    mov cx, 60
+    rep movsb
+    pop es
+    pop ds
+    jmp short .put
+.room:
+    inc byte [gs:V_NLOG]
+.put:
+    imul bx, bx, 12
+    mov [gs:V_LOG + bx], edi
+    mov [gs:V_LOG + bx + 4], eax
+    mov eax, [fs:edi]
+    mov [gs:V_LOG + bx + 8], eax
+    popad
+    ret
+
+status_line:                        ; pass, test, progress bar and error log
+    pushad
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0703
+    call goto_rc
+    SAY "Pass    "
+    mov byte [gs:V_ATTR], A_VALUE
+    movzx eax, word [gs:V_PASS]
+    call putdec
+    SAY "   "
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0803
+    call goto_rc
+    SAY "Test    "
+    mov byte [gs:V_ATTR], A_VALUE
+    movzx si, byte [gs:V_TEST]
+    shl si, 1
+    mov si, [cs:testnames + si]
+    call puts
+    mov si, s_writing
+    cmp byte [gs:V_TMP+3], 0
+    je .w
+    mov si, s_verifying
+.w:
+    call puts
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0903
+    call goto_rc
+    SAY "Address "
+    mov byte [gs:V_ATTR], A_VALUE
+    mov eax, edi
+    mov cl, 8
+    call puthex
+    SAY "  of  "
+    mov eax, [gs:V_END]
+    call puthex
+    ; bar: 60 cells over the current range
+    mov dx, 0x0B03
+    call goto_rc
+    mov eax, edi
+    sub eax, [gs:V_START]
+    imul eax, eax, 60
+    mov ecx, [gs:V_END]
+    sub ecx, [gs:V_START]
+    jnz .r
+    inc ecx
+.r:
+    xor edx, edx
+    div ecx                         ; 0..60
+    cmp eax, 60
+    jbe .b
+    mov eax, 60
+.b:
+    mov cx, ax
+    mov byte [gs:V_ATTR], A_OK
+    jcxz .rest
+.fill:
+    mov al, 0xDB
+    call putc
+    loop .fill
+.rest:
+    mov cx, 60
+    movzx ax, byte [gs:V_COL]
+    sub ax, 3
+    sub cx, ax
+    jbe .errs
+    mov byte [gs:V_ATTR], A_DIM
+.e:
+    mov al, 0xB0
+    call putc
+    loop .e
+.errs:
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x0D03
+    call goto_rc
+    SAY "Errors  "
+    mov byte [gs:V_ATTR], A_OK
+    mov eax, [gs:V_ERRS]
+    test eax, eax
+    jz .z
+    mov byte [gs:V_ATTR], A_BAD
+.z:
+    call putdec
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "      (address  expected  read)"
+    movzx cx, byte [gs:V_NLOG]
+    xor bx, bx
+    mov dh, 14
+.log:
+    jcxz .x
+    push cx
+    mov dl, 11
+    call goto_rc
+    mov byte [gs:V_ATTR], A_BAD
+    mov eax, [gs:V_LOG + bx]
+    mov cl, 8
+    call puthex
+    SAY "  "
+    mov eax, [gs:V_LOG + bx + 4]
+    call puthex
+    SAY "  "
+    mov eax, [gs:V_LOG + bx + 8]
+    call puthex
+    pop cx
+    add bx, 12
+    inc dh
+    loop .log
+.x:
+    popad
+    ret
+
+testnames: dw tn0, tn1, tn2, tn3, tn4
+tn0: db "1/5 own address   ", 0
+tn1: db "2/5 checkerboard  ", 0
+tn2: db "3/5 inverted board", 0
+tn3: db "4/5 all zeros     ", 0
+tn4: db "5/5 all ones      ", 0
+s_writing: db "  writing  ", 0
+s_verifying: db "  checking ", 0
+t_mem: db "Memory test", 0
+h_mem1: db "Enter Start   Esc Back", 0
+h_mem2: db "Esc Stop", 0
+
+; Flat real mode: FS gets a 4 GB limit (base 0) via a short trip to protected mode.
+flat_on:
+    pushf
+    cli
+    push eax
+    o32 lgdt [cs:gdtr]
+    mov eax, cr0
+    or al, 1
+    mov cr0, eax
+    jmp short .pm
+.pm:
+    mov ax, 8
+    mov fs, ax
+    mov eax, cr0
+    and al, 0xFE
+    mov cr0, eax
+    jmp short .rm
+.rm:
+    xor ax, ax
+    mov fs, ax
+    pop eax
+    popf
+    ret
+align 8
+gdt:
+    dq 0
+    dw 0xFFFF, 0x0000
+    db 0x00, 0x92, 0xCF, 0x00
+gdtr:
+    dw 15
+    dd 0xE8000 + gdt
+
+kbc_wait:
+    push cx
+    xor cx, cx
+.l:
+    in al, 0x64
+    test al, 2
+    jz .x
+    loop .l
+.x:
+    pop cx
+    ret
+
+a20_on:
+    call kbc_wait
+    mov al, 0xD1
+    out 0x64, al
+    call kbc_wait
+    mov al, 0xDF
+    out 0x60, al
+    call kbc_wait
+    ret
+
+a20_off:
+    call kbc_wait
+    mov al, 0xD1
+    out 0x64, al
+    call kbc_wait
+    mov al, 0xDD
+    out 0x60, al
+    call kbc_wait
+    ret
+
+a20_check:                          ; CF=1 if 1 MB wraps to 0 (A20 closed)
+    push eax
+    push ebx
+    mov ebx, [fs:dword 0x600]
+    mov dword [fs:dword 0x100600], 0x13572468
+    mov dword [fs:dword 0x600], 0x2468ACE0
+    cmp dword [fs:dword 0x100600], 0x13572468
+    mov [fs:dword 0x600], ebx
+    pop ebx
+    pop eax
+    je .ok
+    stc
+    ret
+.ok:
+    clc
+    ret
+
+; ------------------------------------------------------------------ end-of-POST summary
+
+page_summary:
+    call cls
+    mov byte [gs:V_ATTR], A_BOX
+    mov dx, 0x0000
+    call goto_rc
+    mov al, 0xC9
+    call putc
+    mov cx, 78
+    mov al, 0xCD
+.t:
+    call putc
+    loop .t
+    mov al, 0xBB
+    call putc
+    mov dx, 0x0100
+    call goto_rc
+    mov al, 0xBA
+    call putc
+    mov byte [gs:V_ATTR], A_VALUE
+    SAY " NCR System 3230 ", 1, A_DIM, 0xFA, 1, A_VALUE, " System summary"
+    mov dx, 0x014F
+    call goto_rc
+    mov byte [gs:V_ATTR], A_BOX
+    mov al, 0xBA
+    call putc
+    mov dx, 0x0200
+    call goto_rc
+    mov al, 0xC8
+    call putc
+    mov cx, 78
+    mov al, 0xCD
+.b:
+    call putc
+    loop .b
+    mov al, 0xBC
+    call putc
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1203
+    call goto_rc
+    SAY "Gathering drive details..."
+    call ide_scan
+    mov dx, 0x1203
+    mov cx, 40
+    mov byte [gs:V_ATTR], A_BG
+    mov al, ' '
+    call hline
+    mov dh, 4
+    mov si, l_cpu
+    call label
+    call cpu_name
+    mov dh, 5
+    mov si, l_speed
+    call label
+    call speed_value
+    mov dh, 6
+    mov si, l_fpu
+    call label
+    mov si, s_fpu_yes
+    cmp byte [gs:V_FPU], 0
+    jne .f
+    mov si, s_fpu_no
+.f:
+    call puts
+    mov dh, 7
+    mov si, l_mem
+    call label
+    call base_kb
+    call putdec
+    SAY " KB base + "
+    call ext_kb
+    call putdec
+    SAY " KB extended"
+    mov dh, 8
+    mov si, l_cache
+    call label
+    call l1_value
+    mov dh, 9
+    mov si, l_l2
+    call label
+    call l2_value
+    mov dh, 11
+    mov si, l_fda
+    call label
+    mov al, 0x10
+    call cmos_read
+    push ax
+    shr al, 4
+    call floppy_name
+    mov dh, 12
+    mov si, l_fdb
+    call label
+    pop ax
+    and al, 0x0F
+    call floppy_name
+    mov dh, 13
+    mov si, l_ide0
+    call label
+    xor bx, bx
+    call ide_line
+    mov dh, 14
+    mov si, l_ide1
+    call label
+    mov bx, 1
+    call ide_line
+    mov dh, 16
+    mov si, l_ports
+    call label
+    call ports_line
+    mov dh, 17
+    mov si, l_video
+    call label
+    call video_value
+    ; footer and a 3 second wait (any key ends it; the key is left for POST)
+    mov byte [gs:V_ATTR], A_BAR
+    mov dx, 0x1800
+    mov cx, 80
+    mov al, ' '
+    call hline
+    mov dx, 0x1801
+    call goto_rc
+    SAY "F1 Setup   F8 Boot menu   F10 Tools   any other key: boot now"
+    push es
+    mov ax, 0x40
+    mov es, ax
+    mov bx, [es:0x6C]
+    xor di, di
+    mov si, 4
+.wait:
+    mov ah, 1
+    int 0x16
+    jnz .end
+    mov ax, [es:0x6C]
+    sub ax, bx
+    cmp ax, 54
+    jae .end
+    dec di
+    jnz .wait
+    dec si
+    jnz .wait
+.end:
+    pop es
+    ret
+l_mem: db "Memory", 0
+l_cache: db "Level 1 cache", 0
+
+align 2, db 0                       ; the checksum covers whole words
+ext_end:

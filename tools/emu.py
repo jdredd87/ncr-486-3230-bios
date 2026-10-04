@@ -388,12 +388,12 @@ class IdeChannel:
 # ----------------------------------------------------------------- machine
 
 class Machine:
-    def __init__(self, image=ORIGINAL, ram_kb=640):
+    def __init__(self, image=ORIGINAL, ram_kb=640, ram_mb=1):
         img = open(image, "rb").read() if isinstance(image, str) else bytes(image)
         assert len(img) == 0x20000
         self.image = img
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
-        self.uc.mem_map(0, 0x120000)                 # 1 MB + HMA wrap area
+        self.uc.mem_map(0, max(0x120000, ram_mb << 20))  # 1 MB (+ HMA) or more for extended RAM
         self.uc.mem_write(0xE0000, img)
         self.ram_kb = ram_kb
         self.cmos = bytearray(128)

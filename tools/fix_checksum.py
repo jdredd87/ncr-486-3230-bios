@@ -28,6 +28,18 @@ def fix(start, length, name):
 
 assert d[0] == 0x55 and d[1] == 0xAA and d[2] == 0x40, "VGA option ROM header missing"
 fix(0x00000, 0x8000, "VGA ROM")
+
+# Tools extension at image 08000 (E800:0000): "NCRX", word size, word checksum.
+# The 16-bit sum of all words in [08000, 08000+size) must be 0.
+if d[0x8000:0x8004] == b"NCRX":
+    size = d[0x8004] | (d[0x8005] << 8)
+    assert 8 <= size <= 0x8000 and size % 2 == 0, "bad tools extension size"
+    d[0x8006] = d[0x8007] = 0
+    s = sum(d[0x8000 + i] | (d[0x8001 + i] << 8) for i in range(0, size, 2)) & 0xFFFF
+    c = (-s) & 0xFFFF
+    d[0x8006], d[0x8007] = c & 0xFF, c >> 8
+    print("%-12s checksum word at 08006h: %04Xh (%d bytes)" % ("Tools ext", c, size))
+
 fix(0x10000, 0x10000, "System BIOS")
 open(dst, "wb").write(d)
 print("wrote", dst)

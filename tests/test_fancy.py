@@ -74,7 +74,16 @@ m = post(IMPROVED)
 L = m.screen_text().splitlines()
 check(L[0].startswith("╔") and L[0].endswith("╗") and L[3].startswith("╚"), "splash: double-line banner on rows 0-3")
 check("NCR System 3230" in L[1] and "Enhanced Edition" in L[1], "splash: title line")
-check("Enhanced by StevenC & Claude" in L[2] and "Press <F1> for SETUP" in L[2], "splash: credits and F1 hint")
+tools = m.read(0xE8000, 4) == b"NCRX"
+if tools:
+    check("Enhanced by StevenC & Claude" in L[2] and "F1 Setup  F8 Boot menu  F10 Tools" in L[2],
+          "splash: credits and F1/F8/F10 hints (Tools extension present)")
+else:
+    check("Enhanced by StevenC & Claude" in L[2] and "Press <F1> for SETUP" in L[2], "splash: credits and F1 hint")
+mx = machine(IMPROVED)
+mx.write(0xE8000, b"\xFF" * 0x8000)                 # board that does not map E8000
+mx.run_until(0xF000, 0x328D, 0xF000, 0x32B9, ds=0x40, max_insns=20_000_000)
+check("Press <F1> for SETUP" in mx.screen_text().splitlines()[2], "splash: without the extension only the F1 hint")
 check(L[5].startswith("ROM BIOS Version"), "splash: POST text continues below the banner (row 5)")
 check(m.cell(20, 40)[1] == 0x17 and m.cell(1, 2)[1] == 0x1F, "splash: blue screen, bright title")
 check(m.cursor()[0] > 5, "splash: cursor below the banner")

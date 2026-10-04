@@ -35,9 +35,9 @@ def image_offset(addr):
         return off
     seg = int(seg, 16)
     linear = seg * 16 + off
-    if not 0xF0000 <= linear < 0x100000:
-        raise ValueError("%s is outside the F000 system BIOS segment" % addr)
-    return 0x10000 + (linear - 0xF0000)
+    if not 0xE0000 <= linear < 0x100000:
+        raise ValueError("%s is outside the ROM (E0000-FFFFF)" % addr)
+    return linear - 0xE0000
 
 
 errors, changes = [], []

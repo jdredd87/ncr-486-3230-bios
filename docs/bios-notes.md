@@ -52,7 +52,7 @@ Inside the F000 segment:
 - **RTC setup.** RTC register B is sanitized at F000:2258 and register A is set to 26h at F000:2BBA. The time-of-day conversion (F000:8192) range-checks every field. A battery-less boot is safe, but the stock BIOS stops at "Battery Power Lost … Press <F1> or <ENTER>". The `error_prompts` patch makes that prompt, and the "Press <ENTER> to continue" prompt for other errors, count down and continue.
 - **CMOS 48h** is unused by the stock BIOS (POST's defaults clear only 10h–47h). The `fancy_boot` patch uses it as the boot-screen switch: A5h means off, and anything else means on. Setup's F2 screen toggles it with F3.
 - **Date.** INT 1Ah AH=04h/05h use the century byte (32h), so there is no Y2K bug there. Setup accepts years 1980–2099 with correct leap years. Unpatched, two-digit years 00–79 are rejected (the `setup_year` patch fixes that).
-- **CPU speed.** "PROCESSOR SPEED: xx MHz" prints CMOS 43h, which neither POST nor Setup writes.
+- **CPU speed.** In the stock BIOS "PROCESSOR SPEED: xx MHz" prints CMOS 43h, which neither POST nor Setup writes. With `tools_rom` it shows the measured clock.
 
 ### Burn-in trap
 
@@ -81,12 +81,35 @@ Zero-filled areas in the F000 segment:
 |------------|------:|-------|
 | 9ED3–A3FF  | 1325  | Used: 9F30–9F5A `ide_nodrive_fast`, A000–A109 `ide_atapi_skip`, A140–A203 `error_prompts`, A240–A2D6 and A300–A3F7 `fancy_boot`. Still free: 9ED3–9F2F, 9F5B–9FFF, A10A–A13F, A204–A23F, A2D7–A2FF. |
 | EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EDF9 `fancy_boot`. Still free: EDFA–EF56. |
-| F85C–FA6D  | 530   | Before the font (keep FA6E) |
+| F85C–FA6D  | 530   | Before the font (keep FA6E). Used: F860–F969 `tools_rom` glue. Still free: F96A–FA6D. |
 | E831–E986  | 342   | Keep E987 |
 | F738–F840  | 265   | Keep F841 |
 | E73C–E82D  | 242   | Keep E82E |
 | DF71–DFFF  | 143   | Inside the Setup module (FA40:3B71–3BFF). Used: FA40:3B71–3B90 and 3BA0–3BED `fancy_boot`. |
 | 0006–00A5  | 160   | Purpose not confirmed; avoid |
+
+### The Tools extension (E800:0000)
+
+- **Location.** `tools_rom` puts a 9.6 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
+- **Entry points (far).**
+  - E800:000A: Tools (AX=0 menu, 1 boot menu)
+  - E800:000D: end-of-POST chime and summary
+  - E800:0010: measure MHz (returns AX)
+  - E800:0013: INT 19h boot override (returns only when there is none)
+- **BIOS hooks.**
+  - F000:3891: speed line.
+  - F000:47B6: end-of-POST beep, replaced by the chime and summary.
+  - F000:47CB: type-ahead key check (F8, F10).
+  - F000:E6F2: INT 19h entry. It still starts at the fixed address and jumps to F000:E066 when nothing is overridden.
+- **RAM used before boot.**
+  - 0500:0000–05FF (linear 05000–055FF): variables, the IDE identify buffer and the timing loop.
+  - 0000:6000–7000: private stack.
+  - 0000:04F0–04F2 (the inter-application area): a one-shot boot choice, `NB` + drive.
+
+  None of it is used once DOS starts. The memory test skips the first 64 KB for this reason.
+- **Memory test.** It uses flat real mode: FS gets a 4 GB limit through a brief switch to protected mode. Gate A20 is opened through the keyboard controller, checked with a wrap test, and closed again afterwards.
+- **Clock speed.** 1000 × 32 `div bx` (24 clocks each on a 486) run from RAM and are timed with PIT channel 2. The result is snapped to a standard speed when within 6 %.
+- **Floppy test.** NCR's floppy drive test (F000:0C00) is the stock BIOS's hidden Ctrl-D feature. The Tools menu calls it through the glue.
 
 Never move the IBM fixed entry points (E05B, E2C3, E6F2, E739, E82E, E987, EC59, EF57, EFC7, EFD2, F065, F0A4, F841, F84D, F859, FA6E, FE6E, FEA5, FEF3, FF23, FF53, FF54, FFF0). DOS-era software jumps to them directly.
 

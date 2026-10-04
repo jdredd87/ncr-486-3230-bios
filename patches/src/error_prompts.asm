@@ -78,6 +78,10 @@ countdown:
     je .handoff
     cmp al, 0x04                ; Ctrl-D
     je .handoff
+    cmp ax, 0x4200              ; F8 (boot menu) / F10 (tools): stop counting and
+    je .go_on                   ; leave the key for POST's end-of-POST key check
+    cmp ax, 0x4400
+    je .go_on
     mov ah, 0
     int 0x16                    ; drop any other key
 .nokey:
@@ -95,6 +99,7 @@ countdown:
     call putc                   ; back over "Ns"
     dec cl
     jnz .second
+.go_on:
     mov dx, CONTINUE
     jmp short .done
 .handoff:

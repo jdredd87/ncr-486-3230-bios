@@ -8,6 +8,7 @@ Source format: everything before the first `;@` marker is a shared header
     ;@ F000:9F24                 place this code at F000:9F24
     ;@ F000:9F24 max=0x80        ... and fail if it grows past 80h bytes
     ;@ F000:9F24 free            ... and require the original bytes to be 00
+    ;@ E800:0000 ff              ... and require the original bytes to be FF (erased)
 
 and is assembled on its own with `org` set to that offset, so absolute
 addresses (call 0x4F60, jmp 0x91B0) are encoded correctly. Use equates in the
@@ -82,6 +83,8 @@ def build(src_path):
         old = rom[at:at + len(code)]
         if "free" in opts and any(old):
             raise SystemExit("chunk %s: target is not free (00) space" % first.strip())
+        if re.search(r"\bff\b", opts) and old != b"\xff" * len(old):
+            raise SystemExit("chunk %s: target is not erased (FF) space" % first.strip())
         for a0, a1, n in placed:
             if at < a1 and a0 < at + len(code):
                 raise SystemExit("chunk %s overlaps chunk %s" % (first.strip(), n))
