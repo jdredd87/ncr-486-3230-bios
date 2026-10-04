@@ -16,19 +16,35 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | `ide_atapi_skip` | A CD-ROM where a drive type is set is skipped in about 1 s with a note, instead of about 32 s plus a phantom hard disk |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079 |
 | `fancy_boot` | A blue boot screen with a typed-in banner, the credits and a "Press <F1> for SETUP" hint. Errors print in red, warnings in yellow, and list items get bullets. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). The credits also appear on Setup's title line. With the screen switched off, POST looks exactly as before. |
-| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has five pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), and a CMOS viewer. It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A: or C: once. With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
+| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has five pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), and a CMOS viewer. It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 156 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 197 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
 
 **On the real machine (2026-10-03):** the first improved build POSTs and boots, and `ide_atapi_skip` is confirmed. With a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on. The countdown, boot screen, Setup option and Tools are tested only in the emulator so far.
 
 **Is the Tools area reachable on your board?** The splash shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read the extension at E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off; everything else works.
 
+### Booting from CD-ROM
+
+The stock BIOS predates the El Torito standard for bootable CDs. `tools_rom` adds it:
+
+1. Put a bootable CD in the IDE CD-ROM drive (master or slave on the motherboard's IDE port).
+2. At the end of POST press **F8**, then **3** (CD-ROM). The menu shows the drive's model name.
+3. The BIOS waits for the disc to spin up (Esc cancels), reads the boot catalog and starts the disc.
+
+| Boot image type | Typical discs | After booting |
+|---|---|---|
+| Floppy emulation (1.2, 1.44 or 2.88 MB) | DOS and Windows 95/98 boot CDs, most 1990s utility CDs | The image is A: and read-only. A real floppy drive becomes B:. |
+| No emulation | ISOLINUX (Linux, FreeDOS 1.x), Windows 2000/XP | The CD is BIOS drive E0h, with the INT 13h extensions the loaders use. |
+| Hard-disk emulation | rare | Not supported: the BIOS says so and boots normally. |
+
+If anything fails (no drive, no disc, a data CD), it prints why and carries on with the normal boot order. The CD service takes 3 KB from the top of base memory (637 KB free), and its code runs from the ROM at E8000. With EMM386 add `X=E800-EFFF` so it doesn't map memory over it. A booted DOS still needs its own CD-ROM driver (such as OAKCDROM.SYS on a Windows 98 boot disc) to read the rest of the CD as a drive letter.
+
 ### Flashing
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `fbf630187817a7788983a8dd7e084c7ee6d3cdc3c5594a4057b60e6afa1c9951`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `37cc054e30a73bc300768d040108dad10b5545423451741469d51026ace49462`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 

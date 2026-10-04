@@ -13,7 +13,8 @@
 ;     beep, and a system summary box for 3 s (any key skips it).
 ; During POST: "PROCESSOR SPEED" shows the measured clock instead of the
 ; never-written CMOS byte 43h.
-; INT 19h (boot): a one-shot boot device chosen in the boot menu.
+; INT 19h (boot): a one-shot boot device chosen in the boot menu: A:, C:,
+; or a bootable (El Torito) CD-ROM, with its own ATAPI driver and INT 13h.
 ;
 ; Tools menu: system information, drives (IDE model names for disks and
 ; CD-ROMs), memory map with option ROMs, memory test (conventional and all
@@ -41,6 +42,7 @@ PRINT2      equ 0x4DD2              ; prints AX as two digits + " MHz"
 NCR_FDTEST  equ 0x0C00
 INT19_ORIG  equ 0xE066
 BOOT_MAGIC  equ 0x424E              ; "NB" at 0000:04F0 (inter-application area)
+CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulation drive number
 
 ; ------------------------------------------------------------------ F000 hooks
 
@@ -2173,11 +2175,36 @@ page_boot:                          ; CF=1 if a device was chosen
     call goto_rc
     SAY "1  Floppy disk A:", 3, 3
     SAY "2  Hard disk C:", 3, 3
+    SAY "3  CD-ROM "
+    call ide_scan                   ; name the CD-ROM drive, if there is one
+    mov bx, 0
+    cmp byte [gs:V_IDTYPE], 2
+    je .cdname
+    inc bx
+    cmp byte [gs:V_IDTYPE + 1], 2
+    je .cdname
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "(no drive found)"
+    jmp short .cdx
+.cdname:
+    mov byte [gs:V_ATTR], A_DIM
+    mov al, '('
+    call putc
+    imul si, bx, 41
+    add si, V_IDNAME
+    call puts_gs
+    mov al, ')'
+    call putc
+.cdx:
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0D05
+    call goto_rc
     SAY "Esc  Normal boot order"
     mov byte [gs:V_ATTR], A_DIM
-    mov dx, 0x0E03
+    mov dx, 0x1003
     call goto_rc
-    SAY "The choice applies to this boot only; Setup is not changed."
+    SAY "The choice applies to this boot only; Setup is not changed.", 3
+    SAY "CD-ROM boot needs a bootable (El Torito) disc on the IDE drive."
 .k:
     call getkey
     cmp ah, 0x01
@@ -2186,12 +2213,17 @@ page_boot:                          ; CF=1 if a device was chosen
     je .a
     cmp al, '2'
     je .c
+    cmp al, '3'
+    je .cd
     jmp short .k
 .a:
     xor al, al
     jmp short .set
 .c:
     mov al, 0x80
+    jmp short .set
+.cd:
+    mov al, CD_DRIVE
 .set:
     push ds
     push 0
@@ -2205,7 +2237,7 @@ page_boot:                          ; CF=1 if a device was chosen
     clc
     ret
 t_boot: db "Boot menu", 0
-h_boot: db "1-2 Choose   Esc Normal boot order", 0
+h_boot: db "1-3 Choose   Esc Normal boot order", 0
 
 ; INT 19h: if the boot menu left a choice, try that device once.
 boot_override:
@@ -2216,6 +2248,11 @@ boot_override:
     jne .no
     mov dl, [0x4F2]
     mov word [0x4F0], 0
+    cmp dl, CD_DRIVE
+    jne .disk
+    pop ds
+    jmp cd_boot                     ; returns only if the CD did not boot
+.disk:
     mov si, 3
 .try:
     xor ax, ax
@@ -2258,6 +2295,895 @@ boot_override:
     pop ds
     ret
 s_bootfail: db 13, 10, "Boot menu: that drive did not boot, using the normal order.", 13, 10, 0
+
+; ------------------------------------------------------------------ CD-ROM boot (El Torito)
+; The boot menu's "CD-ROM" choice. The stock BIOS predates El Torito, so this
+; brings its own ATAPI driver (polled PIO, packet commands on the primary IDE
+; channel) and, for after the boot, its own INT 13h service for the CD:
+;   * floppy emulation (1.2/1.44/2.88 MB images, most DOS-era boot CDs): the
+;     image is drive 00h (A:), read-only; a real floppy drive moves to B:.
+;   * no emulation (ISOLINUX, newer installers): drive E0h with the INT 13h
+;     extensions loaders use (41h, 42h, 48h) and El Torito's 4B00h/4B01h.
+; Hard-disk emulation is rare and is refused. The service lives in this ROM;
+; its data and a 2 KB sector cache take 3 KB from the top of base memory.
+
+R_KB        equ 3                   ; KB of base memory taken for the RAM block
+R_OLD13     equ 0x10                ; RAM block (DS in the CD code): previous INT 13h
+C_DEV       equ 0x14                ; 0 master, 1 slave
+C_MEDIA     equ 0x15                ; 0 no emulation, 1/2/3 = 1.2/1.44/2.88 MB floppy
+C_DRIVE     equ 0x16                ; BIOS drive number of the CD: 00h or E0h
+C_STAT      equ 0x17                ; last INT 13h status
+C_RBA       equ 0x18                ; CD sector of the boot image
+C_CACHE     equ 0x1C                ; CD sector held in C_BUF (-1 = none)
+C_SPT       equ 0x20
+C_HEADS     equ 0x21
+C_CYLS      equ 0x22                ; word
+C_REALFD    equ 0x24                ; 1 = a real floppy drive answers as B:
+C_FUNC      equ 0x25
+C_LOADSEG   equ 0x26                ; word
+C_COUNT     equ 0x28                ; word, 512-byte sectors loaded at boot
+C_PKT       equ 0x30                ; 12-byte ATAPI packet
+C_SPEC      equ 0x40                ; 13h-byte El Torito specification packet
+C_BUF       equ 0x400               ; 2048-byte sector buffer
+R_CHAIN     equ cd_chain - cd_stub
+
+; Copied to the start of the RAM block; INT 13h points here.
+cd_stub:
+    push ds
+    push cs
+    pop ds
+    jmp EXT_SEG:cd_int13
+cd_chain:                           ; the handler returns here (RETF) to pass a call on
+    pop ds
+    jmp far [cs:R_OLD13]
+cd_stub_end:
+
+tty:                                ; CS:SI, zero-terminated, through BIOS teletype
+    push ax
+    push bx
+    push si
+.l:
+    mov al, [cs:si]
+    inc si
+    test al, al
+    jz .x
+    mov ah, 0x0E
+    mov bx, 7
+    int 0x10
+    jmp short .l
+.x:
+    pop si
+    pop bx
+    pop ax
+    ret
+
+tty_gs:                             ; GS:SI, zero-terminated
+    push ax
+    push bx
+    push si
+.l:
+    mov al, [gs:si]
+    inc si
+    test al, al
+    jz .x
+    mov ah, 0x0E
+    mov bx, 7
+    int 0x10
+    jmp short .l
+.x:
+    pop si
+    pop bx
+    pop ax
+    ret
+
+norm_esdi:                          ; ES:DI -> same address with DI < 16
+    push ax
+    push bx
+    mov ax, di
+    shr ax, 4
+    mov bx, es
+    add bx, ax
+    mov es, bx
+    and di, 0x0F
+    pop bx
+    pop ax
+    ret
+
+atapi_wait:                         ; DX = 1F7, AH = status bits awaited with BSY clear (0 = none)
+    push ecx                        ; -> AL = status. CF=1 after ~6-12 s
+    in al, dx                       ; 400 ns before the status is valid
+    in al, dx
+    in al, dx
+    in al, dx
+    mov ecx, 6000000
+.l:
+    in al, dx
+    test al, 0x80
+    jnz .n
+    test ah, ah
+    jz .ok
+    test al, ah
+    jnz .ok
+.n:
+    dec ecx
+    jnz .l
+    stc
+    jmp short .x
+.ok:
+    clc
+.x:
+    pop ecx
+    ret
+
+; Send the packet at C_PKT to the CD-ROM; data goes to ES:DI.
+; CF=1 on error or timeout, AL = error register (sense key in bits 7-4).
+atapi_packet:
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+    call norm_esdi
+    mov dx, 0x3F6
+    mov al, 0x0A                    ; polled: no interrupts
+    out dx, al
+    mov dx, 0x1F6
+    mov al, [C_DEV]
+    shl al, 4
+    or al, 0xA0
+    out dx, al
+    mov dx, 0x1F7
+    xor ah, ah
+    call atapi_wait
+    jc .fail
+    mov dx, 0x1F1
+    xor al, al                      ; PIO data transfer
+    out dx, al
+    mov dx, 0x1F4
+    out dx, al                      ; at most 0800h bytes (one sector) per block
+    inc dx
+    mov al, 0x08
+    out dx, al
+    mov dx, 0x1F7
+    mov al, 0xA0                    ; PACKET
+    out dx, al
+    mov ah, 0x09                    ; wait for DRQ or ERR
+    call atapi_wait
+    jc .fail
+    test al, 0x01
+    jnz .err
+    mov si, C_PKT
+    mov cx, 6
+    mov dx, 0x1F0
+    rep outsw
+    mov dx, 0x1F7
+.phase:
+    xor ah, ah
+    call atapi_wait
+    jc .fail
+    test al, 0x01
+    jnz .err
+    test al, 0x08
+    jz .done                        ; no more data: command complete
+    mov dx, 0x1F4                   ; byte count of this block
+    in al, dx
+    mov cl, al
+    inc dx
+    in al, dx
+    mov ch, al
+    inc cx
+    shr cx, 1
+    mov dx, 0x1F0
+    rep insw
+    call norm_esdi
+    mov dx, 0x1F7
+    jmp short .phase
+.done:
+    clc
+    jmp short .out
+.err:
+    mov dx, 0x1F1
+    in al, dx
+    stc
+    jmp short .out
+.fail:
+    xor al, al
+    stc
+.out:
+    pushf
+    push ax
+    mov dx, 0x1F7
+    in al, dx                       ; clear any pending device interrupt
+    push ds
+    push 0x40
+    pop ds
+    mov al, [0x76]                  ; the BIOS's device-control byte
+    and al, 0x0B
+    mov dx, 0x3F6
+    out dx, al
+    and byte [0x8E], 0x7F           ; no stale "IRQ 14 seen" flag for INT 13h
+    pop ds
+    pop ax
+    popf
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    ret
+
+cd_read:                            ; EAX = CD sector, CX = sectors -> ES:DI. CF=1 on error
+    push edx
+    push si
+    mov si, 4                       ; tries: the first read after a disc change reports it
+.try:
+    mov edx, eax
+    bswap edx
+    mov word [C_PKT], 0x0028        ; READ(10)
+    mov [C_PKT + 2], edx
+    mov byte [C_PKT + 6], 0
+    mov [C_PKT + 7], ch
+    mov [C_PKT + 8], cl
+    mov byte [C_PKT + 9], 0
+    mov word [C_PKT + 10], 0
+    push ax
+    call atapi_packet
+    pop ax
+    jnc .x
+    dec si
+    jnz .try
+    stc
+.x:
+    pop si
+    pop edx
+    ret
+
+cd_tur:                             ; TEST UNIT READY. CF=1 if not ready
+    push eax
+    xor eax, eax
+    mov [C_PKT], eax
+    mov [C_PKT + 4], eax
+    mov [C_PKT + 8], eax
+    call atapi_packet
+    pop eax
+    ret
+
+vread:                              ; EAX = 512-byte sector of the boot image -> ES:DI. CF=1 on error
+    push eax
+    push ecx
+    push si
+    push di
+    mov si, ax
+    and si, 3
+    shl si, 9
+    add si, C_BUF
+    shr eax, 2
+    add eax, [C_RBA]
+    cmp eax, [C_CACHE]
+    je .copy
+    mov dword [C_CACHE], -1
+    push es
+    push di
+    push ds
+    pop es
+    mov di, C_BUF
+    mov cx, 1
+    call cd_read
+    pop di
+    pop es
+    jc .x
+    mov [C_CACHE], eax
+.copy:
+    mov cx, 256
+    rep movsw
+    clc
+.x:
+    pop di
+    pop si
+    pop ecx
+    pop eax
+    ret
+
+cd_ready:                           ; wait for a disc: up to ~25 s, Esc cancels. CF=1 if none
+    push bx
+    push cx
+    push si
+    push di
+    mov di, 100
+.t:
+    call cd_tur
+    jnc .x
+    cmp di, 99                      ; the first failure is usually just "disc changed"
+    jne .dot
+    mov si, s_cdwait
+    call tty
+.dot:
+    test di, 3
+    jnz .key
+    mov al, '.'
+    mov ah, 0x0E
+    mov bx, 7
+    int 0x10
+.key:
+    mov ah, 1
+    int 0x16
+    jz .wait
+    xor ah, ah
+    int 0x16
+    cmp ah, 0x01
+    je .no
+.wait:
+    mov cx, 250
+    call delay_ms
+    dec di
+    jnz .t
+.no:
+    stc
+.x:
+    pop di
+    pop si
+    pop cx
+    pop bx
+    ret
+
+; From boot_override (DS = CS, private stack). Returns only if the CD did not boot.
+cd_boot:
+    mov si, s_cdboot
+    call tty
+    call ide_scan
+    xor bx, bx
+    cmp byte [gs:V_IDTYPE], 2
+    je .found
+    inc bx
+    cmp byte [gs:V_IDTYPE + 1], 2
+    je .found
+    mov si, s_cdnodrv
+    jmp .say
+.found:
+    imul si, bx, 41
+    add si, V_IDNAME
+    call tty_gs
+    push 0x40
+    pop es
+    sub word [es:0x13], R_KB        ; RAM block at the top of base memory
+    mov ax, [es:0x13]
+    shl ax, 6
+    mov es, ax
+    xor di, di
+    mov si, cd_stub
+    mov cx, cd_stub_end - cd_stub
+    rep movsb
+    xor al, al
+    mov cx, C_BUF - (cd_stub_end - cd_stub)
+    rep stosb
+    push es
+    pop ds                          ; DS = RAM block from here on
+    mov [C_DEV], bl
+    mov dword [C_CACHE], -1
+    call cd_ready
+    mov si, s_cdready
+    jc .fail
+    push ds
+    pop es
+    mov di, C_BUF                   ; boot record volume descriptor
+    mov eax, 17
+    mov cx, 1
+    call cd_read
+    mov si, s_cdnoboot
+    jc .fail
+    cmp dword [C_BUF], 0x30444300   ; 00h "CD0"
+    jne .fail
+    cmp word [C_BUF + 4], "01"      ; "01": "CD001", version 1
+    jne .fail
+    push si
+    push cs
+    pop es
+    mov si, C_BUF + 7
+    mov di, s_eltorito
+    mov cx, 23
+    repe cmpsb
+    pop si
+    jne .fail
+    push ds
+    pop es
+    mov eax, [C_BUF + 0x47]         ; boot catalog
+    mov di, C_BUF
+    mov cx, 1
+    call cd_read
+    jc .fail
+    xor ax, ax                      ; validation entry: header 1, key 55AAh, words sum to 0
+    mov di, C_BUF
+    mov cx, 16
+.sum:
+    add ax, [di]
+    add di, 2
+    loop .sum
+    test ax, ax
+    jnz .fail
+    cmp byte [C_BUF], 1
+    jne .fail
+    cmp word [C_BUF + 0x1E], 0xAA55
+    jne .fail
+    cmp byte [C_BUF + 0x20], 0x88   ; initial entry: bootable
+    jne .fail
+    mov al, [C_BUF + 0x21]
+    and al, 0x0F
+    mov si, s_cdhd
+    cmp al, 4
+    jae .fail
+    mov [C_MEDIA], al
+    mov ax, [C_BUF + 0x22]
+    test ax, ax
+    jnz .seg
+    mov ax, 0x07C0
+.seg:
+    mov [C_LOADSEG], ax
+    mov ax, [C_BUF + 0x26]
+    mov [C_COUNT], ax
+    mov eax, [C_BUF + 0x28]
+    mov [C_RBA], eax
+    mov dword [C_CACHE], -1         ; the buffer held the catalog
+    mov byte [C_DRIVE], CD_DRIVE
+    mov cx, 4                       ; a no-emulation count of 0 means one CD sector
+    cmp byte [C_MEDIA], 0
+    je .cnt
+    mov byte [C_DRIVE], 0
+    mov word [C_CYLS], 80
+    mov byte [C_HEADS], 2
+    mov al, 15
+    cmp byte [C_MEDIA], 1
+    je .spt
+    mov al, 18
+    cmp byte [C_MEDIA], 2
+    je .spt
+    mov al, 36
+.spt:
+    mov [C_SPT], al
+    mov cx, 1
+.cnt:
+    cmp word [C_COUNT], 0
+    jne .fit
+    mov [C_COUNT], cx
+.fit:
+    mov si, s_cdnoboot              ; image must fit between 7000h and the RAM block
+    cmp word [C_LOADSEG], 0x0700
+    jb .fail
+    movzx eax, word [C_COUNT]
+    shl eax, 5
+    movzx ecx, word [C_LOADSEG]
+    add eax, ecx
+    mov cx, ds
+    cmp eax, ecx
+    ja .fail
+    mov es, [C_LOADSEG]             ; load the boot image
+    xor di, di
+    xor eax, eax
+    mov cx, [C_COUNT]
+.load:
+    call vread
+    mov si, s_cdread
+    jc .fail
+    mov dx, es
+    add dx, 0x20
+    mov es, dx
+    inc eax
+    loop .load
+    mov byte [C_SPEC], 0x13         ; El Torito specification packet for INT 13h AX=4B01h
+    mov al, [C_MEDIA]
+    mov [C_SPEC + 1], al
+    mov al, [C_DRIVE]
+    mov [C_SPEC + 2], al
+    mov eax, [C_RBA]
+    mov [C_SPEC + 4], eax
+    mov al, [C_DEV]
+    mov [C_SPEC + 8], al
+    mov ax, [C_LOADSEG]
+    mov [C_SPEC + 12], ax
+    mov ax, [C_COUNT]
+    mov [C_SPEC + 14], ax
+    cmp byte [C_MEDIA], 0
+    je .hook
+    mov byte [C_SPEC + 16], 79      ; last cylinder, sectors per track, last head
+    mov al, [C_SPT]
+    mov [C_SPEC + 17], al
+    mov byte [C_SPEC + 18], 1
+    push 0x40                       ; the CD is A:; a real floppy drive becomes B:
+    pop es
+    mov al, [es:0x10]
+    mov ah, al
+    and al, 0x3E
+    or al, 0x01
+    test ah, 0x01
+    jz .one
+    or al, 0x40
+    mov byte [C_REALFD], 1
+.one:
+    mov [es:0x10], al
+.hook:
+    push 0
+    pop es
+    cli
+    mov eax, [es:0x13 * 4]
+    mov [R_OLD13], eax
+    mov word [es:0x13 * 4], 0
+    mov [es:0x13 * 4 + 2], ds
+    sti
+    mov si, s_cdnoemu
+    cmp byte [C_MEDIA], 0
+    je .msg
+    mov si, s_cdemu
+    call tty
+    mov si, s_cdrealb
+    cmp byte [C_REALFD], 0
+    jne .msg
+    mov si, s_cdnl
+.msg:
+    call tty
+    mov dl, [C_DRIVE]
+    mov bx, [C_LOADSEG]
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    cmp bx, 0x07C0
+    jne .far
+    jmp 0x0000:0x7C00
+.far:
+    push bx
+    push ax
+    retf
+.fail:
+    push 0x40
+    pop es
+    add word [es:0x13], R_KB        ; give the memory back
+.say:
+    call tty
+    mov si, s_cdtail
+    call tty
+    mov cx, 2000
+    call delay_ms
+    ret
+
+s_eltorito: db "EL TORITO SPECIFICATION"
+s_cdboot:   db 13, 10, "CD-ROM boot: ", 0
+s_cdwait:   db 13, 10, "  waiting for the disc (Esc cancels) ", 0
+s_cdnodrv:  db "no CD-ROM drive found on the IDE channel", 0
+s_cdready:  db 13, 10, "  no disc, or the drive did not become ready", 0
+s_cdnoboot: db 13, 10, "  this disc is not bootable (no El Torito boot image)", 0
+s_cdhd:     db 13, 10, "  hard-disk emulation boot images are not supported", 0
+s_cdread:   db 13, 10, "  read error while loading the boot image", 0
+s_cdtail:   db 13, 10, "Using the normal boot order.", 13, 10, 0
+s_cdnoemu:  db 13, 10, "  El Torito, no emulation: the CD is drive E0h", 13, 10, 0
+s_cdemu:    db 13, 10, "  El Torito, floppy emulation: the CD is drive A:", 0
+s_cdrealb:  db ", the floppy drive is B:"
+s_cdnl:     db 13, 10, 0
+
+; INT 13h after a CD boot. From the RAM stub: DS = RAM block, caller's DS on the stack.
+cd_int13:
+    cmp dl, [C_DRIVE]
+    je cd_own
+    cmp ah, 0x4B
+    jne .notq
+    cmp dl, 0x7F                    ; El Torito "any drive" status query
+    je cd_own
+.notq:
+    cmp dl, 1
+    jne .chain
+    cmp byte [C_REALFD], 0
+    jne .remap
+.chain:
+    push ds
+    push word R_CHAIN
+    retf                            ; the stub restores DS and jumps to the old INT 13h
+.remap:                             ; B: is the real drive A:
+    mov [C_FUNC], ah
+    mov dl, 0
+    pushf
+    call far [R_OLD13]
+    pushf
+    mov dl, 1
+    cmp byte [C_FUNC], 0x08
+    jne .rm
+    mov dl, 2                       ; drive count: the CD and the real drive
+.rm:
+    popf
+    pop ds
+    retf 2
+
+; Frame after PUSHAD: DI 0, SI 4, BX 16, DX 20, CX 24, AX 28, ES 32, caller DS 34.
+cd_own:
+    sti
+    cld
+    push es
+    pushad
+    mov bp, sp
+    mov si, cd_funcs
+.f:
+    mov al, [cs:si]
+    cmp al, 0xFF
+    je cdf_bad
+    cmp al, [bp + 29]
+    je .hit
+    add si, 3
+    jmp short .f
+.hit:
+    jmp word [cs:si + 1]
+
+cd_funcs:
+    db 0x00
+    dw cdf_ok
+    db 0x01
+    dw cdf_status
+    db 0x02
+    dw cdf_read
+    db 0x03
+    dw cdf_wp
+    db 0x04
+    dw cdf_ok
+    db 0x05
+    dw cdf_wp
+    db 0x08
+    dw cdf_params
+    db 0x0D
+    dw cdf_ok
+    db 0x10
+    dw cdf_ok
+    db 0x15
+    dw cdf_type
+    db 0x16
+    dw cdf_floppy
+    db 0x17
+    dw cdf_floppy
+    db 0x18
+    dw cdf_media
+    db 0x41
+    dw cdf_ext
+    db 0x42
+    dw cdf_xread
+    db 0x43
+    dw cdf_wp
+    db 0x44
+    dw cdf_ok
+    db 0x47
+    dw cdf_ok
+    db 0x48
+    dw cdf_xparams
+    db 0x4B
+    dw cdf_spec
+    db 0xFF
+
+cdf_ok:
+    mov byte [bp + 29], 0
+cd_ret:                             ; AH in the frame = status, CF = status not zero
+    mov al, [bp + 29]
+    mov [C_STAT], al
+    popad
+    pop es
+    pop ds
+    test ah, ah
+    jnz .e
+    retf 2
+.e:
+    stc
+    retf 2
+
+cd_ret_nc:                          ; return with CF=0 whatever AH is
+    mov byte [C_STAT], 0
+    popad
+    pop es
+    pop ds
+    clc
+    retf 2
+
+cdf_bad:
+    mov byte [bp + 29], 0x01        ; invalid function
+    jmp short cd_ret
+
+cdf_wp:
+    mov byte [bp + 29], 0x03        ; write-protected
+    jmp short cd_ret
+
+cdf_status:
+    mov al, [C_STAT]
+    mov [bp + 29], al
+    popad
+    pop es
+    pop ds
+    clc
+    retf 2
+
+cdf_type:                           ; 15h: floppy without change line
+    cmp byte [C_MEDIA], 0
+    je cdf_bad
+    mov byte [bp + 29], 0x01
+    jmp short cd_ret_nc
+
+cdf_floppy:                         ; 16h (disc not changed), 17h
+    cmp byte [C_MEDIA], 0
+    je cdf_bad
+    jmp short cdf_ok
+
+cdf_media:                          ; 18h: ES:DI = diskette parameter table
+    cmp byte [C_MEDIA], 0
+    je cdf_bad
+    xor ax, ax
+    mov es, ax
+    mov eax, [es:0x1E * 4]
+    mov [bp], ax
+    shr eax, 16
+    mov [bp + 32], ax
+    jmp short cdf_ok
+
+cdf_params:                         ; 08h
+    cmp byte [C_MEDIA], 0
+    je cdf_bad
+    mov word [bp + 28], 0
+    mov al, [C_MEDIA]
+    shl al, 1                       ; drive type 2/4/6 = 1.2/1.44/2.88 MB
+    mov [bp + 16], al
+    mov byte [bp + 17], 0
+    mov ax, [C_CYLS]
+    dec ax
+    mov [bp + 25], al
+    shl ah, 6
+    or ah, [C_SPT]
+    mov [bp + 24], ah
+    mov al, [C_HEADS]
+    dec al
+    mov [bp + 21], al
+    mov al, [C_REALFD]
+    inc al
+    mov [bp + 20], al
+    xor ax, ax
+    mov es, ax
+    mov eax, [es:0x1E * 4]
+    mov [bp], ax
+    shr eax, 16
+    mov [bp + 32], ax
+    jmp cdf_ok
+
+cdf_read:                           ; 02h: AL sectors, CH/CL cylinder and sector, DH head, ES:BX
+    cmp byte [C_MEDIA], 0
+    je cdf_bad
+    movzx ebx, byte [bp + 24]
+    mov ax, bx
+    and bx, 0x3F                    ; sector
+    shl ax, 2
+    and ax, 0x300
+    mov al, [bp + 25]               ; cylinder
+    test bl, bl
+    jz .nf
+    cmp bl, [C_SPT]
+    ja .nf
+    cmp ax, [C_CYLS]
+    jae .nf
+    mov cl, [bp + 21]
+    cmp cl, [C_HEADS]
+    jae .nf
+    movzx eax, ax
+    movzx ecx, byte [C_HEADS]
+    imul eax, ecx
+    movzx ecx, byte [bp + 21]
+    add eax, ecx
+    movzx ecx, byte [C_SPT]
+    imul eax, ecx
+    dec bx
+    add eax, ebx                    ; image sector
+    movzx esi, word [C_CYLS]
+    movzx ecx, byte [C_HEADS]
+    imul esi, ecx
+    movzx ecx, byte [C_SPT]
+    imul esi, ecx                   ; sectors in the image
+    mov es, [bp + 32]
+    mov di, [bp + 16]
+    movzx cx, byte [bp + 28]
+    xor dx, dx
+.l:
+    jcxz .done
+    cmp eax, esi
+    jae .end
+    call vread
+    jc .err
+    mov bx, es
+    add bx, 0x20
+    mov es, bx
+    inc eax
+    inc dx
+    dec cx
+    jmp short .l
+.done:
+    mov [bp + 28], dl
+    jmp cdf_ok
+.end:
+    mov [bp + 28], dl
+.nf:
+    mov byte [bp + 29], 0x04        ; sector not found
+    jmp cd_ret
+.err:
+    mov [bp + 28], dl
+    mov byte [bp + 29], 0x20        ; controller failure
+    jmp cd_ret
+
+cdf_ext:                            ; 41h: extensions present (fixed-disk access subset)
+    cmp byte [C_MEDIA], 0
+    jne cdf_bad
+    cmp word [bp + 16], 0x55AA
+    jne cdf_bad
+    mov word [bp + 16], 0xAA55
+    mov byte [bp + 29], 0x21        ; EDD 1.1
+    mov word [bp + 24], 0x0001
+    jmp cd_ret_nc
+
+cdf_xread:                          ; 42h: DS:SI = disk address packet (2048-byte sectors)
+    cmp byte [C_MEDIA], 0
+    jne cdf_bad
+    mov es, [bp + 34]
+    mov si, [bp + 4]
+    mov eax, [es:si + 8]
+    mov cx, [es:si + 2]
+    les di, [es:si + 4]
+    xor dx, dx
+.l:
+    test cx, cx
+    jz .ok
+    mov bx, cx
+    cmp bx, 16
+    jbe .n
+    mov bx, 16
+.n:
+    push cx
+    mov cx, bx
+    call cd_read
+    pop cx
+    jc .err
+    movzx ebx, bx
+    add eax, ebx
+    add dx, bx
+    sub cx, bx
+    shl bx, 7                       ; 2048 bytes = 128 paragraphs per sector
+    mov si, es
+    add si, bx
+    mov es, si
+    jmp short .l
+.ok:
+    mov byte [bp + 29], 0
+    jmp short .count
+.err:
+    mov byte [bp + 29], 0x20
+.count:
+    mov es, [bp + 34]
+    mov si, [bp + 4]
+    mov [es:si + 2], dx             ; sectors transferred
+    jmp cd_ret
+
+cdf_xparams:                        ; 48h: drive parameters
+    cmp byte [C_MEDIA], 0
+    jne cdf_bad
+    mov es, [bp + 34]
+    mov di, [bp + 4]
+    cmp word [es:di], 0x1A
+    jb cdf_bad
+    mov word [es:di], 0x1A
+    mov word [es:di + 2], 0x0074    ; removable, change line, lockable
+    push di
+    add di, 4
+    xor ax, ax
+    mov cx, 10
+    rep stosw
+    pop di
+    mov word [es:di + 24], 2048
+    jmp cdf_ok
+
+cdf_spec:                           ; 4B00h/4B01h: El Torito specification packet -> DS:SI
+    cmp byte [bp + 28], 1
+    ja cdf_bad
+    mov es, [bp + 34]
+    mov di, [bp + 4]
+    mov si, C_SPEC
+    mov cx, 0x13
+    rep movsb
+    jmp cdf_ok
 
 ; ------------------------------------------------------------------ memory test
 

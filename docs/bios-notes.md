@@ -71,7 +71,7 @@ If the keyboard interface test returns code 3 and the keyboard clock/data lines 
   - a drive type set with nothing connected takes about 16 s.
 
   The `ide_atapi_skip` and `ide_nodrive_fast` patches fix both.
-- **Boot order** (INT 19h, F000:E169). If CMOS 47h bit 6 ("Boot from Flex Disk") is set, POST tries A: then C:. With nothing bootable it shows "DISK ERROR, INSERT SYSTEM DISK" and retries after a key press. There is no CD-ROM boot; the BIOS predates El Torito.
+- **Boot order** (INT 19h, F000:E169). If CMOS 47h bit 6 ("Boot from Flex Disk") is set, POST tries A: then C:. With nothing bootable it shows "DISK ERROR, INSERT SYSTEM DISK" and retries after a key press. The stock BIOS has no CD-ROM boot; it predates El Torito. `tools_rom` adds one to the boot menu (see below).
 
 ## Free space for patches
 
@@ -90,7 +90,7 @@ Zero-filled areas in the F000 segment:
 
 ### The Tools extension (E800:0000)
 
-- **Location.** `tools_rom` puts a 9.6 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
+- **Location.** `tools_rom` puts a 12 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
 - **Entry points (far).**
   - E800:000A: Tools (AX=0 menu, 1 boot menu)
   - E800:000D: end-of-POST chime and summary
@@ -106,7 +106,22 @@ Zero-filled areas in the F000 segment:
   - 0000:6000–7000: private stack.
   - 0000:04F0–04F2 (the inter-application area): a one-shot boot choice, `NB` + drive.
 
-  None of it is used once DOS starts. The memory test skips the first 64 KB for this reason.
+  None of it is used once DOS starts. The memory test skips the first 64 KB for this reason. The one exception is a CD-ROM boot: its RAM block stays at the top of base memory (40:13 is lowered by 3 KB).
+- **CD-ROM boot (El Torito).** The boot menu's choice 3 stores drive E0h in the one-shot marker. INT 19h then runs `cd_boot`:
+  - Finds the ATAPI device with IDENTIFY PACKET DEVICE.
+  - Takes 3 KB from the top of base memory (40:13) for a RAM block: a stub that INT 13h points to, the variables, and a 2 KB sector cache.
+  - Waits with TEST UNIT READY (up to about 25 s, Esc cancels).
+  - Reads the boot record volume descriptor (sector 17, `EL TORITO SPECIFICATION`), then the boot catalog: the validation entry (header 1, key 55AAh, words summing to 0) and the initial entry (88h = bootable, media type, load segment, sector count, image sector).
+  - Loads the image's first sectors (the count is in 512-byte units), hooks INT 13h and jumps to it.
+
+  The ATAPI driver uses polled PIO with nIEN set: PACKET (A0h) with a byte-count limit of 800h, then READ(10) or TEST UNIT READY. Each read is tried 4 times, which absorbs the "medium changed" unit attention. Afterwards the device-control byte is restored from 40:76.
+
+  The INT 13h service after the boot:
+  - **Floppy emulation (drive 00h).** Functions 00/01/02/04/08/15/16/17/18 and 4Bh. Writes and formats return 03h (write-protected). Reads go through the cache: CD sector = image + image sector / 4. When a real floppy drive exists, it answers as drive 01h, and 40:10 shows two drives.
+  - **No emulation (drive E0h).** Functions 41h (EDD 1.1, fixed-disk subset), 42h (2048-byte sectors, 16 per READ(10)), 44/47/48h and 4B00/4B01h. CHS functions return 01h.
+  - **Everything else** is passed to the previous INT 13h by the stub (`pop ds` / `jmp far [cs:10h]`).
+
+  The handler code runs from the ROM at E8000, so that area must stay mapped after the boot. A memory manager must exclude it (EMM386 `X=E800-EFFF`).
 - **Memory test.** It uses flat real mode: FS gets a 4 GB limit through a brief switch to protected mode. Gate A20 is opened through the keyboard controller, checked with a wrap test, and closed again afterwards.
 - **Clock speed.** 1000 × 32 `div bx` (24 clocks each on a 486) run from RAM and are timed with PIT channel 2. The result is snapped to a standard speed when within 6 %.
 - **Floppy test.** NCR's floppy drive test (F000:0C00) is the stock BIOS's hidden Ctrl-D feature. The Tools menu calls it through the glue.
