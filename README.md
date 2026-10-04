@@ -16,7 +16,9 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | `ide_atapi_skip` | A CD-ROM where a drive type is set is skipped in about 1 s with a note, instead of about 32 s plus a phantom hard disk |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079 |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved. **None of this has run on the real board yet.**
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved.
+
+**On the real machine (2026-10-03):** the improved ROM, programmed into a new chip, POSTs and boots. `ide_atapi_skip` is confirmed: with a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on without the long wait. The other patches are tested only in the emulator so far.
 
 ### Flashing
 
