@@ -4,7 +4,7 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 
 - **`NCR-BIOS-517-0000672-VER2.03.00-U19.BIN`** is the original ROM dump. It is never modified.
 - **`build/NCR3230-203-improved.BIN`** is the improved ROM, ready to program into a chip.
-- **`userhdd/dos/userhdd.exe`** replaces NCR's lost USERHDD.EXE.
+- **`userhdd/dos/userhdd.exe`** replaces NCR's lost USERHDD.EXE. With the improved ROM it is no longer needed: Tools has a Hard disk setup page.
 
 ## Improved ROM
 
@@ -14,15 +14,31 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | `error_prompts` | POST prompts continue on their own after a countdown: 5 s for errors such as "Disk controller failure", 3 s for battery and settings warnings. ENTER continues straight away, F1 opens Setup and Ctrl-D works as before. |
 | `ide_nodrive_fast` | A drive type set with nothing connected: POST waits about 0.05 s instead of about 16 s |
 | `ide_atapi_skip` | A CD-ROM where a drive type is set is skipped in about 1 s with a note, instead of about 32 s plus a phantom hard disk |
+| `hdd_auto` | Hard disks work like a mid-90s BIOS. When the settings are lost (no battery), C: and D: default to **Automatic** instead of "Not installed", the defaults are saved with valid checksums, and the disk init is no longer skipped after a settings loss. A drive set to Automatic that isn't connected is skipped quietly, without "Disk controller failure", a countdown or a phantom drive. So with no battery, an IDE hard disk is simply found at every boot. |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079 |
 | `fancy_boot` | A blue boot screen with a typed-in banner, the credits and a "Press <F1> for SETUP" hint. Errors print in red, warnings in yellow, and list items get bullets. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). The credits also appear on Setup's title line. With the screen switched off, POST looks exactly as before. |
-| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has five pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), and a CMOS viewer. It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
+| `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has six pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), a CMOS viewer, and **Hard disk setup** (see below). It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 197 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 230 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
 
 **On the real machine (2026-10-03):** the first improved build POSTs and boots, and `ide_atapi_skip` is confirmed. With a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on. The countdown, boot screen, Setup option and Tools are tested only in the emulator so far.
 
 **Is the Tools area reachable on your board?** The splash shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read the extension at E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off; everything else works.
+
+### Hard disk setup
+
+For an IDE hard disk, nothing needs setting up: **Automatic** (type 2) asks the drive for its geometry at every boot, and it is now the default. The fixed drive types 4–47 are still in the ROM for old MFM/RLL-era drives and for software that reads the table, but you never need to pick one.
+
+To change the settings, press **F10** at the end of POST and choose **7  Hard disk setup**. The page lists what is on the IDE cable (model, size and geometry). Then:
+
+| Key | Does |
+|---|---|
+| C / D | Change drive C: or D:, cycling through Not installed, Automatic, User type, and the fixed type it had before (if any) |
+| U | Type in a user geometry (cylinders, heads, sectors): what USERHDD.EXE was for |
+| M | Copy the master drive's own geometry into the user type |
+| S | Save to CMOS (types, the type-1 table and the checksums). Enter then restarts so POST uses the new settings. |
+
+Use the user type only for a disk that must keep the geometry it was partitioned with on another PC. Without a CMOS battery the settings are lost at power-off and the page says so; Automatic still works then, because it is the default.
 
 ### Booting from CD-ROM
 
@@ -44,11 +60,13 @@ If anything fails (no drive, no disc, a data CD), it prints why and carries on w
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `37cc054e30a73bc300768d040108dad10b5545423451741469d51026ace49462`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `c6e4f0a00008df09501c91eebba7fd4b3041626a12367dcffe77622b9c2387f4`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
 ## USERHDD.EXE
+
+With the improved ROM, Tools → Hard disk setup does this job, so you only need USERHDD with the original ROM.
 
 Setup's disk type 1 ("parameter set by USERHDD.EXE") needed a utility that is lost. `userhdd/dos/userhdd.exe` does the same job. Run it from DOS on the NCR:
 

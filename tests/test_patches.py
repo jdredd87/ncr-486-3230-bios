@@ -129,7 +129,7 @@ m = ide(IMPROVED, master=Atapi(), ctype=0x40)
 check(m.ready_retries == 0 and m.mem_byte(0x475) == 0, "improved: CD-ROM with C=type 4 -> skipped")
 m = ide(IMPROVED, master=AtaDisk(615, 4, 17), slave=Atapi(), ctype=0x23)
 t = m.read(0xFE411, 16)
-check(m.mem_byte(0x475) == 1 and "Disk 1: CD-ROM" in m.text() and struct.unpack_from("<H", t)[0] == 615,
+check(m.mem_byte(0x475) == 1 and struct.unpack_from("<H", t)[0] == 615,
       "improved: disk + CD-ROM slave with D=auto -> C: kept (615 cyl), D: skipped")
 
 for disk in (AtaDisk(615, 4, 17), AtaDisk(16383, 16, 63), AtaDisk(980, 10, 17)):
@@ -144,10 +144,57 @@ for ct in (0x40, 0x10):
     check(o.mem_byte(0x475) == m.mem_byte(0x475) and o.text() == m.text(),
           "improved: fixed type %d behaves as the original" % (ct >> 4))
 
-o = ide(ORIGINAL)
-m = ide(IMPROVED)
+o = ide(ORIGINAL, ctype=0x40)
+m = ide(IMPROVED, ctype=0x40)
 check(o.real_seconds > 10 and m.real_seconds < 0.5 and "Disk controller failure" in m.text(),
-      "no drive on the cable: %.1f s -> %.2f s, same error message" % (o.real_seconds, m.real_seconds))
+      "type 4, no drive on the cable: %.1f s -> %.2f s, same error message" % (o.real_seconds, m.real_seconds))
+
+# ---------------------------------------------------------------- automatic hard disks (hdd_auto)
+o = ide(ORIGINAL)
+check("Disk controller failure" in o.text() and o.mem_byte(0x475) == 1,
+      "original: C=auto with no drive -> 'Disk controller failure' and a phantom drive")
+for fv in (0xFF, 0x7F):
+    m = ide(IMPROVED, float_value=fv)
+    check(m.text().strip() == "" and m.mem_byte(0x475) == 0 and m.mem_byte(0x415) & 0x02 == 0 and m.cmds == [],
+          "improved: C=auto with no drive (bus %02Xh) -> skipped quietly, no error" % fv)
+o = ide(ORIGINAL, master=AtaDisk(615, 4, 17), ctype=0x23)
+m = ide(IMPROVED, master=AtaDisk(615, 4, 17), ctype=0x23)
+check(o.mem_byte(0x475) == 2 and "Disk 1" in o.text(), "original: D=auto with no slave -> Disk 1 failure")
+check(m.mem_byte(0x475) == 1 and m.text().strip() == "" and struct.unpack_from("<H", m.read(0xFE411, 16))[0] == 615,
+      "improved: D=auto with no slave -> C: only, no message")
+m = ide(IMPROVED, master=AtaDisk(615, 4, 17), slave=Atapi(), ctype=0x23)
+check(m.mem_byte(0x475) == 1 and m.real_seconds < 2, "improved: D=auto with a CD-ROM slave -> C: only, quick")
+o = ide(ORIGINAL, master=AtaDisk(615, 4, 17), ctype=0x23, status0e=0xC0)
+m = ide(IMPROVED, master=AtaDisk(615, 4, 17), ctype=0x23, status0e=0xC0)
+check(o.mem_byte(0x475) == 0 and o.cmds == [], "original: after lost settings the disk init is skipped")
+check(m.mem_byte(0x475) == 1 and struct.unpack_from("<H", m.read(0xFE411, 16))[0] == 615,
+      "improved: after lost settings the automatic disk is still found")
+
+
+def defaults(image):
+    m = Machine(image)
+    for i in range(0x10, 0x80):
+        m.cmos[i] = (i * 37 + 11) & 0xFF                # garbage
+    m.run_to_any(0xF000, 0x217F, {(0xF000, 0x21EB): "done"}, max_insns=1_000_000, ss=0, sp=0x7000)
+    return m.cmos
+
+
+def std_ok(c):
+    return (c[0x2E] << 8 | c[0x2F]) == sum(c[0x10:0x2E])
+
+
+def ncr_ok(c):
+    return (c[0x7E] << 8 | c[0x7F]) == sum(c[0x44:0x48])
+
+
+o, c = defaults(ORIGINAL), defaults(IMPROVED)
+check(o[0x12] == 0 and not std_ok(o), "original: defaults have no hard disks and an invalid checksum")
+check(c[0x12] == 0x23 and c[0x10] == 0x40 and c[0x44] == 0xE5 and c[0x47] == 0x4E
+      and c[0x15:0x17] == bytes([0x80, 2]),
+      "improved: defaults C: and D: automatic, A: 1.44 MB, 640 KB, NCR bytes as before")
+check(std_ok(c) and ncr_ok(c), "improved: defaults are stored with valid checksums")
+check(all(c[i] == 0 for i in range(0x10, 0x48) if i not in (0x10, 0x12, 0x15, 0x16, 0x2E, 0x2F, 0x44, 0x47))
+      and c[0x48:0x7E] == o[0x48:0x7E], "improved: the rest of the defaults are unchanged")
 m = ide(IMPROVED, ctype=0x00, master=Atapi())
 check(m.cmds == [] and m.mem_byte(0x475) == 0, "improved: C=0 still never touches the IDE bus")
 

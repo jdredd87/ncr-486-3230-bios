@@ -65,6 +65,8 @@ If the keyboard interface test returns code 3 and the keyboard clock/data lines 
   - **0 = not installed.** POST skips the hard-disk init entirely (F000:90D9).
   - **1 = user-defined.** The geometry is in CMOS 72h–7Bh with a checksum in 7Ch, copied into the table at POST (F000:3C58). Setup refuses type 1 unless that checksum is valid (FA40:1227). `userhdd/userhdd.exe` writes it.
   - **2 = automatic.** POST sends IDENTIFY and writes the geometry into slot 2 (E411). For D:, Setup stores "2" as 3, which uses slot 3 (E421). Drives over 1024/16/63 are fitted down to at most 1024/16/63 (F000:92D3).
+  - **Lost settings.** The stock disk init returns at once when CMOS 0Eh bit 7 or 6 is set (F000:90C4), and the stock defaults have no hard disks. Every path that sets those bits also loads the defaults in the same boot: battery (2081) and checksum (2AA6, POST code 0Fh, which runs before the defaults at code 14h). The `hdd_auto` patch makes the defaults C: and D: Automatic (12h = 23h) and saves them with valid checksums. It also lets the disk init run after a settings loss.
+  - **Absent drives.** Before the controller test (F000:9131), `hdd_auto` probes each Automatic drive. Nothing is there if the status reads FFh, or 00h for the slave, or if the sector-count and sector-number registers don't hold written values. Such a drive is dropped from 40:75. Without the patch, an absent C: gives "Disk controller failure" and a phantom drive, and an absent D: gives "Disk 1 failure".
   - **4–47 = fixed types.** Useful ones: 33 = 1024/16/63 (504 MB), 24 = 702/16/63.
 - **Why POST can appear to hang.** All IDE waits are loop-count timeouts, but some are long. After a reset, POST retries INT 13h AH=10h ("drive ready") up to 31,000 times with about 1 ms between tries (F000:9150). Measured in the emulator (`tests/hdinit.py`):
   - a CD-ROM where a drive type is set takes about 32 s and still counts as a hard disk;
@@ -79,8 +81,8 @@ Zero-filled areas in the F000 segment:
 
 | F000 range | Bytes | Notes |
 |------------|------:|-------|
-| 9ED3–A3FF  | 1325  | Used: 9F30–9F5A `ide_nodrive_fast`, A000–A109 `ide_atapi_skip`, A140–A203 `error_prompts`, A240–A2D6 and A300–A3F7 `fancy_boot`. Still free: 9ED3–9F2F, 9F5B–9FFF, A10A–A13F, A204–A23F, A2D7–A2FF. |
-| EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EDF9 `fancy_boot`. Still free: EDFA–EF56. |
+| 9ED3–A3FF  | 1325  | Used: 9F30–9F5A `ide_nodrive_fast`, 9F5B–9FDB `hdd_auto`, A000–A109 `ide_atapi_skip`, A140–A20D `error_prompts`, A240–A2D6 and A300–A3F7 `fancy_boot`. Still free: 9ED3–9F2F, 9FDC–9FFF, A10A–A13F, A20E–A23F, A2D7–A2FF. |
+| EC5C–EF56  | 763   | Between fixed entry points (keep EF57). Used: EC60–EE68 `fancy_boot`, EE69–EED4 `hdd_auto`. Still free: EED5–EF56. |
 | F85C–FA6D  | 530   | Before the font (keep FA6E). Used: F860–F969 `tools_rom` glue. Still free: F96A–FA6D. |
 | E831–E986  | 342   | Keep E987 |
 | F738–F840  | 265   | Keep F841 |
@@ -122,6 +124,7 @@ Zero-filled areas in the F000 segment:
   - **Everything else** is passed to the previous INT 13h by the stub (`pop ds` / `jmp far [cs:10h]`).
 
   The handler code runs from the ROM at E8000, so that area must stay mapped after the boot. A memory manager must exclude it (EMM386 `X=E800-EFFF`).
+- **Hard disk setup** (menu item 7). It edits CMOS 12h (19h/1Ah for types 15 and up), the type-1 table 72h–7Bh with its check byte 7Ch (the low byte of the sum of 72h–7Bh; POST F000:3C58 and Setup FA40:1227 check it), and the checksum at 2Eh/2Fh. Enter after saving restarts warm (40:72 = 1234h, then FFFF:0000).
 - **Memory test.** It uses flat real mode: FS gets a 4 GB limit through a brief switch to protected mode. Gate A20 is opened through the keyboard controller, checked with a wrap test, and closed again afterwards.
 - **Clock speed.** 1000 × 32 `div bx` (24 clocks each on a 486) run from RAM and are timed with PIT channel 2. The result is snapped to a standard speed when within 6 %.
 - **Floppy test.** NCR's floppy drive test (F000:0C00) is the stock BIOS's hidden Ctrl-D feature. The Tools menu calls it through the glue.

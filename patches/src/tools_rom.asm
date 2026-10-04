@@ -274,6 +274,14 @@ V_IDMB      equ 0x98                ; 2 dwords
 V_IDNAME    equ 0xA0                ; 2 x 41 bytes
 V_IDFW      equ 0xF4                ; 2 x 9 bytes
 V_NUM       equ 0x108               ; 16 bytes
+V_TC        equ 0x120               ; hard disk setup: working types for C: and D:
+V_TD        equ 0x121
+V_OC        equ 0x122               ; types as found in CMOS
+V_OD        equ 0x123
+V_UCYL      equ 0x124               ; user type (type 1): word
+V_UHD       equ 0x126
+V_USPT      equ 0x127
+V_IDGEO     equ 0x128               ; 2 x (cylinders, heads, sectors) words from IDENTIFY
 V_IDBUF     equ 0x200               ; 512 bytes
 V_TLOOP     equ 0x400               ; timing loop copied to RAM
 
@@ -1354,6 +1362,14 @@ ide_scan:
     mov si, V_IDBUF + 46            ; firmware: words 23-26
     mov cx, 8
     call idstr
+    imul di, bx, 6                  ; default geometry: words 1, 3, 6
+    add di, V_IDGEO
+    mov ax, [gs:V_IDBUF + 2]
+    mov [gs:di], ax
+    mov ax, [gs:V_IDBUF + 6]
+    mov [gs:di + 2], ax
+    mov ax, [gs:V_IDBUF + 12]
+    mov [gs:di + 4], ax
     mov eax, [gs:V_IDBUF + 120]     ; LBA sectors (words 60-61)
     test byte [gs:V_IDBUF + 99], 2  ; LBA supported (word 49 bit 9)
     jnz .lba
@@ -1458,7 +1474,7 @@ page_menu:
     mov byte [gs:V_ATTR], A_DIM
     mov dx, 0x0403
     call goto_rc
-    SAY "Information and tests for this machine. Nothing here changes Setup."
+    SAY "Information and tests for this machine. Only Hard disk setup changes settings."
     xor cx, cx
 .item:
     mov dh, cl
@@ -1526,19 +1542,21 @@ page_menu:
 .exit:
     ret
 
-MENU_N equ 8
-menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8
-menu_pages: dw page_sysinfo, page_drives, page_memmap, page_memtest, page_cmos, page_fdtest, page_boot_menu
+MENU_N equ 9
+menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8, m9
+menu_pages: dw page_sysinfo, page_drives, page_memmap, page_memtest, page_cmos, page_fdtest, page_hdsetup
+            dw page_boot_menu
 m1: db "1  System information", 0
 m2: db "2  Drives and devices", 0
 m3: db "3  Memory map and option ROMs", 0
 m4: db "4  Memory test", 0
 m5: db "5  CMOS contents", 0
 m6: db "6  Floppy drive test (NCR built-in)", 0
-m7: db "7  Boot menu", 0
-m8: db "8  Continue booting", 0
+m7: db "7  Hard disk setup", 0
+m8: db "8  Boot menu", 0
+m9: db "9  Continue booting", 0
 t_menu: db "Tools", 0
-h_menu: db 0x18, 0x19, " Select   Enter Open   1-8 Shortcut   Esc Continue booting", 0
+h_menu: db 0x18, 0x19, " Select   Enter Open   1-9 Shortcut   Esc Continue booting", 0
 h_back: db "Any key returns to the menu", 0
 
 page_sysinfo:
@@ -2123,6 +2141,515 @@ s_ok: db "OK", 0
 s_lost: db "power was lost", 0
 s_on: db "on", 0
 s_off: db "off", 0
+
+; ------------------------------------------------------------------ hard disk setup
+; Sets CMOS hard disk types the 1990s way: Automatic (the drive is asked at
+; every boot), a user geometry typed in or copied from the drive (what
+; USERHDD.EXE does), or Not installed. Writes CMOS 12h (19h/1Ah for types 15+),
+; the type-1 table 72h-7Ch, and the standard checksum.
+
+page_hdsetup:
+    call ide_scan
+    mov al, 0x12
+    call cmos_read
+    push ax
+    shr al, 4
+    mov bl, 0x19
+    call hd_type_in
+    mov [gs:V_TC], al
+    mov [gs:V_OC], al
+    pop ax
+    and al, 0x0F
+    mov bl, 0x1A
+    call hd_type_in
+    mov [gs:V_TD], al
+    mov [gs:V_OD], al
+    call user_in
+.draw:
+    mov si, t_hd
+    mov bx, h_hd
+    call frame
+    mov dh, 5
+    mov si, l_ide0
+    call label
+    xor bx, bx
+    call ide_line
+    mov dh, 6
+    xor bx, bx
+    call geo_line
+    mov dh, 7
+    mov si, l_ide1
+    call label
+    mov bx, 1
+    call ide_line
+    mov dh, 8
+    mov bx, 1
+    call geo_line
+    mov dh, 10
+    mov si, l_hdc2
+    call label
+    mov al, [gs:V_TC]
+    mov ah, 2
+    call hd_value
+    mov dh, 11
+    mov si, l_hdd2
+    call label
+    mov al, [gs:V_TD]
+    mov ah, 3
+    call hd_value
+    mov dh, 12
+    mov si, l_user
+    call label
+    call user_value
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0E05
+    call goto_rc
+    SAY 1, A_TITLE, "C", 1, A_VALUE, "  Change drive C:        ", 1, A_TITLE, "U", 1, A_VALUE, "  Type in the user geometry", 3
+    SAY 1, A_TITLE, "D", 1, A_VALUE, "  Change drive D:        ", 1, A_TITLE, "M", 1, A_VALUE, "  User geometry from the master", 3
+    SAY 1, A_TITLE, "S", 1, A_VALUE, "  Save                   ", 1, A_TITLE, "Esc", 1, A_VALUE, " Back without saving"
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1203
+    call goto_rc
+    SAY "Automatic asks the drive for its geometry at every boot: right for any IDE", 3
+    SAY "disk, nothing to type in. Use the user type only for a disk that must keep", 3
+    SAY "a geometry it was set up with elsewhere. This BIOS reaches at most 504 MB."
+    mov al, 0x0D
+    call cmos_read
+    test al, 0x80
+    jnz .key
+    mov byte [gs:V_ATTR], A_BAD
+    mov dx, 0x1603
+    call goto_rc
+    SAY "No CMOS battery: settings are lost at power-off. The defaults use Automatic."
+.key:
+    call getkey
+    cmp ah, 0x01
+    je .back
+    or al, 0x20                     ; letters in lower case
+    cmp al, 'c'
+    je .c
+    cmp al, 'd'
+    je .d
+    cmp al, 'u'
+    je .u
+    cmp al, 'm'
+    je .m
+    cmp al, 's'
+    je .s
+    jmp .key
+.c:
+    mov al, [gs:V_TC]
+    mov ah, 2
+    mov bl, [gs:V_OC]
+    call hd_cycle
+    mov [gs:V_TC], al
+    jmp .draw
+.d:
+    mov al, [gs:V_TD]
+    mov ah, 3
+    mov bl, [gs:V_OD]
+    call hd_cycle
+    mov [gs:V_TD], al
+    jmp .draw
+.u:
+    call user_edit
+    jmp .draw
+.m:
+    cmp byte [gs:V_IDTYPE], 1
+    jne .key
+    mov ax, [gs:V_IDGEO]
+    cmp ax, 1024                    ; as Automatic does: at most 1024 cylinders
+    jbe .mc
+    mov ax, 1024
+.mc:
+    mov [gs:V_UCYL], ax
+    mov al, [gs:V_IDGEO + 2]
+    mov [gs:V_UHD], al
+    mov al, [gs:V_IDGEO + 4]
+    mov [gs:V_USPT], al
+    jmp .draw
+.s:
+    call hd_save
+    jnc .saved
+    mov byte [gs:V_ATTR], A_BAD
+    mov dx, 0x1603
+    call goto_rc
+    SAY "A drive is set to the user type: enter its geometry first (U or M).        "
+    jmp .key
+.saved:
+    mov byte [gs:V_ATTR], A_OK
+    mov dx, 0x1603
+    call goto_rc
+    SAY "Saved. Enter restarts now so POST uses the new settings; Esc goes back.    "
+.sk:
+    call getkey
+    cmp ah, 0x01
+    je .back
+    cmp al, 0x0D
+    jne .sk
+    push 0x40
+    pop es
+    mov word [es:0x72], 0x1234      ; warm restart, no memory test
+    jmp 0xFFFF:0x0000
+.back:
+    clc
+    ret
+
+hd_type_in:                         ; AL = CMOS nibble, BL = extended register -> AL = type
+    cmp al, 0x0F
+    jne .x
+    mov al, bl
+    call cmos_read
+.x:
+    ret
+
+hd_cycle:                           ; AL = type, AH = Automatic value, BL = type found -> AL = next
+    test al, al
+    jnz .1
+    mov al, ah                      ; Not installed -> Automatic
+    ret
+.1:
+    cmp al, ah
+    jne .2
+    mov al, 1                       ; Automatic -> User type
+    ret
+.2:
+    cmp al, 1
+    jne .3
+    mov al, bl                      ; User type -> the fixed type found, if any
+    cmp al, 4
+    jae .r
+.3:
+    xor al, al                      ; -> Not installed
+.r:
+    ret
+
+hd_value:                           ; AL = type, AH = Automatic value
+    test al, al
+    jnz .1
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "Not installed"
+    ret
+.1:
+    cmp al, ah
+    jne .2
+    SAY "Automatic", 1, A_DIM, "  (detected at every boot)"
+    ret
+.2:
+    cmp al, 1
+    jne .3
+    SAY "User type (type 1)"
+    ret
+.3:
+    push ax
+    SAY "Type "
+    pop ax
+    movzx eax, al
+    push ax
+    call putdec
+    SAY "  "
+    pop ax
+    dec al                          ; table entry: 16 bytes from F000:E401
+    movzx si, al
+    shl si, 4
+    push es
+    push 0xF000
+    pop es
+    mov cx, [es:si + 0xE401]
+    mov bl, [es:si + 0xE403]
+    mov bh, [es:si + 0xE40F]
+    pop es
+    jmp geo_print
+
+geo_print:                          ; CX cylinders, BL heads, BH sectors: "c/h/s (n MB)"
+    mov byte [gs:V_ATTR], A_VALUE
+    movzx eax, cx
+    call putdec
+    mov al, '/'
+    call putc
+    movzx eax, bl
+    call putdec
+    mov al, '/'
+    call putc
+    movzx eax, bh
+    call putdec
+    SAY 1, A_DIM, "  ("
+    movzx eax, cx
+    movzx edx, bl
+    imul eax, edx
+    movzx edx, bh
+    imul eax, edx
+    shr eax, 11
+    call putdec
+    SAY " MB)", 1, A_VALUE
+    ret
+
+geo_line:                           ; row DH: the default geometry of an ATA disk BX
+    cmp byte [gs:V_IDTYPE + bx], 1
+    jne .x
+    mov si, l_geo
+    call label
+    imul si, bx, 6
+    mov cx, [gs:V_IDGEO + si]
+    mov bl, [gs:V_IDGEO + si + 2]
+    mov bh, [gs:V_IDGEO + si + 4]
+    call geo_print
+.x:
+    ret
+
+user_value:
+    cmp word [gs:V_UCYL], 0
+    jne .set
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "not set"
+    ret
+.set:
+    mov cx, [gs:V_UCYL]
+    mov bl, [gs:V_UHD]
+    mov bh, [gs:V_USPT]
+    jmp geo_print
+
+user_in:                            ; CMOS type-1 table -> V_UCYL/V_UHD/V_USPT (0 if not valid)
+    mov word [gs:V_UCYL], 0
+    xor dx, dx
+    mov cl, 0x72
+.s:
+    mov al, cl
+    call cmos_read
+    movzx ax, al
+    add dx, ax
+    inc cl
+    cmp cl, 0x7C
+    jb .s
+    test dx, dx
+    jz .x
+    mov al, 0x7C
+    call cmos_read
+    cmp al, dl
+    jne .x
+    mov al, 0x73
+    call cmos_read
+    mov ah, al
+    mov al, 0x72
+    call cmos_read
+    mov [gs:V_UCYL], ax
+    mov al, 0x74
+    call cmos_read
+    mov [gs:V_UHD], al
+    mov al, 0x7B
+    call cmos_read
+    mov [gs:V_USPT], al
+.x:
+    ret
+
+user_edit:                          ; ask for cylinders, heads and sectors
+    mov dx, 0x1603
+    mov cx, 76
+    mov byte [gs:V_ATTR], A_BG
+    mov al, ' '
+    call hline
+    mov dx, 0x1603
+    call goto_rc
+    mov byte [gs:V_ATTR], A_VALUE
+    SAY "Cylinders (1-1024): "
+    mov bx, 1024
+    call getnum
+    jc .x
+    push ax
+    SAY "   heads (1-16): "
+    mov bx, 16
+    call getnum
+    pop cx
+    jc .x
+    push cx
+    push ax
+    SAY "   sectors (1-63): "
+    mov bx, 63
+    call getnum
+    pop dx
+    pop cx
+    jc .x
+    mov [gs:V_UCYL], cx
+    mov [gs:V_UHD], dl
+    mov [gs:V_USPT], al
+.x:
+    ret
+
+getnum:                             ; typed number 1..BX at the cursor -> AX. CF=1 on Esc
+    push cx
+    push dx
+    push si
+    xor cx, cx                      ; value
+    xor si, si                      ; digits typed
+    mov byte [gs:V_ATTR], A_SEL
+.k:
+    call getkey
+    cmp ah, 0x01
+    je .esc
+    cmp al, 0x0D
+    je .enter
+    cmp al, 0x08
+    je .bs
+    cmp al, '0'
+    jb .k
+    cmp al, '9'
+    ja .k
+    cmp si, 4
+    jae .k
+    call putc
+    sub al, '0'
+    movzx dx, al
+    imul cx, cx, 10
+    add cx, dx
+    inc si
+    jmp .k
+.bs:
+    test si, si
+    jz .k
+    dec si
+    mov ax, cx
+    xor dx, dx
+    mov cx, 10
+    div cx
+    mov cx, ax
+    dec byte [gs:V_COL]
+    mov al, ' '
+    call putc
+    dec byte [gs:V_COL]
+    jmp .k
+.enter:
+    test cx, cx
+    jz .k
+    cmp cx, bx
+    ja .k
+    mov ax, cx
+    mov byte [gs:V_ATTR], A_VALUE
+    clc
+    jmp short .x
+.esc:
+    mov byte [gs:V_ATTR], A_VALUE
+    stc
+.x:
+    pop si
+    pop dx
+    pop cx
+    ret
+
+cmos_write:                         ; CMOS[AL] = AH
+    pushf
+    cli
+    or al, 0x80
+    out 0x70, al
+    mov al, ah
+    out 0x71, al
+    popf
+    ret
+
+hd_save:                            ; CF=1 if a drive is type 1 with no user geometry
+    mov al, [gs:V_TC]
+    cmp al, 1
+    je .user
+    cmp byte [gs:V_TD], 1
+    jne .types
+.user:
+    mov cx, [gs:V_UCYL]
+    test cx, cx
+    jz .fail
+    mov al, 0x72                    ; type-1 table, as USERHDD writes it
+    mov ah, cl
+    call cmos_write
+    mov al, 0x73
+    mov ah, ch
+    call cmos_write
+    mov al, 0x74
+    mov ah, [gs:V_UHD]
+    call cmos_write
+    mov al, 0x75                    ; no write precompensation
+    mov ah, 0xFF
+    call cmos_write
+    mov al, 0x76
+    call cmos_write
+    mov al, 0x77
+    xor ah, ah
+    call cmos_write
+    mov al, 0x78                    ; control byte: bit 3 = more than 8 heads
+    cmp byte [gs:V_UHD], 8
+    jbe .ctl
+    mov ah, 0x08
+.ctl:
+    call cmos_write
+    mov al, 0x79                    ; landing zone = cylinders
+    mov ah, cl
+    call cmos_write
+    mov al, 0x7A
+    mov ah, ch
+    call cmos_write
+    mov al, 0x7B
+    mov ah, [gs:V_USPT]
+    call cmos_write
+    xor dx, dx
+    mov cl, 0x72
+.us:
+    mov al, cl
+    call cmos_read
+    add dl, al
+    inc cl
+    cmp cl, 0x7C
+    jb .us
+    mov al, 0x7C
+    mov ah, dl
+    call cmos_write
+.types:
+    mov al, [gs:V_TC]
+    mov bl, 0x19
+    call .nib
+    shl dh, 4
+    mov cl, dh
+    mov al, [gs:V_TD]
+    mov bl, 0x1A
+    call .nib
+    or cl, dh
+    mov al, 0x12
+    mov ah, cl
+    call cmos_write
+    xor dx, dx                      ; standard checksum over 10h-2Dh
+    mov cl, 0x10
+.cs:
+    mov al, cl
+    call cmos_read
+    movzx ax, al
+    add dx, ax
+    inc cl
+    cmp cl, 0x2E
+    jb .cs
+    mov al, 0x2E
+    mov ah, dh
+    call cmos_write
+    mov al, 0x2F
+    mov ah, dl
+    call cmos_write
+    clc
+    ret
+.fail:
+    stc
+    ret
+.nib:                               ; AL = type, BL = extended register -> DH = nibble
+    mov dh, al
+    cmp al, 15
+    jb .n
+    mov ah, al
+    mov al, bl
+    call cmos_write
+    mov dh, 0x0F
+.n:
+    ret
+
+t_hd:   db "Hard disk setup", 0
+h_hd:   db "C/D Change   U/M User geometry   S Save   Esc Back", 0
+l_hdc2: db "Hard disk C:", 0
+l_hdd2: db "Hard disk D:", 0
+l_user: db "User type (type 1)", 0
+l_geo:  db "  geometry", 0
 
 page_fdtest:
     mov si, t_fd

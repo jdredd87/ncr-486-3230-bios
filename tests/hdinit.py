@@ -17,10 +17,10 @@ from emu import ORIGINAL, AtaDisk, Atapi, IdeChannel, Machine, cmos_checksum  # 
 
 
 def run(image=ORIGINAL, master=None, slave=None, ctype=0x20, float_value=0xFF, limit=400_000_000,
-        ext=(0, 0)):
+        ext=(0, 0), status0e=0):
     m = Machine(image)
     m.install_rom_vectors()
-    m.cmos[0x10], m.cmos[0x12], m.cmos[0x0E] = 0x40, ctype, 0
+    m.cmos[0x10], m.cmos[0x12], m.cmos[0x0E] = 0x40, ctype, status0e
     m.cmos[0x19], m.cmos[0x1A] = ext
     cmos_checksum(m.cmos)
     m.ide = IdeChannel(m, master, slave, float_value)
@@ -49,6 +49,9 @@ CASES = [
     ("C=auto disk + CD-ROM slave, D=0", dict(master=AtaDisk(615, 4, 17), slave=Atapi())),
     ("C=auto disk, D=auto CD-ROM slave", dict(master=AtaDisk(615, 4, 17), slave=Atapi(), ctype=0x23)),
     ("C=0, CD-ROM as master", dict(master=Atapi(), ctype=0x00)),
+    ("C=auto disk, D=auto, no slave", dict(master=AtaDisk(615, 4, 17), ctype=0x23)),
+    ("C=type 4, nothing (bus FFh)", dict(ctype=0x40)),
+    ("C=auto disk, settings lost (0Eh=C0h)", dict(master=AtaDisk(615, 4, 17), ctype=0x23, status0e=0xC0)),
 ]
 
 

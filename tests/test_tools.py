@@ -49,7 +49,8 @@ m = machine()
 run_tools(m, [])
 t = text(m)
 check("NCR System 3230 · Tools" in t and "Enhanced by StevenC & Claude" in t, "menu: title bar with credits")
-check(all(s in t for s in ("1  System information", "4  Memory test", "6  Floppy drive test", "8  Continue booting")),
+check(all(s in t for s in ("1  System information", "4  Memory test", "6  Floppy drive test", "7  Hard disk setup",
+                         "9  Continue booting")),
       "menu: all items listed")
 check(m.cell(6, 21)[1] == 0x3F, "menu: first item highlighted")
 m = machine()
