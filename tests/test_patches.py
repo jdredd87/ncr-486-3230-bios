@@ -171,6 +171,25 @@ check(m.mem_byte(0x475) == 1 and struct.unpack_from("<H", m.read(0xFE411, 16))[0
       "improved: after lost settings the automatic disk is still found")
 
 
+def post_disks(image, status0e, ctype=0x23):
+    """POST from the floppy check to after the disk init (F000:4293-4371), one IDE disk."""
+    m = Machine(image)
+    m.install_rom_vectors()
+    m.cmos[0x10], m.cmos[0x12], m.cmos[0x0E] = 0x40, ctype, status0e
+    m.ide = hdinit.IdeChannel(m, AtaDisk(615, 4, 17), None)
+    m.write(0x4AE, struct.pack("<H", 1))
+    r = m.run_to_any(0xF000, 0x4293, {(0xF000, 0x4371): "after"}, max_insns=400_000_000, ss=0, sp=0x400)
+    return r, m
+
+
+r, o = post_disks(ORIGINAL, 0xC0)
+check(r == "after" and o.mem_byte(0x475) == 0, "original POST: lost settings -> floppy check and disk init skipped")
+r, m = post_disks(IMPROVED, 0xC0)
+check(r == "after" and m.mem_byte(0x475) == 1, "improved POST: lost settings -> the automatic disk is found")
+r, m = post_disks(IMPROVED, 0x00)
+check(r == "after" and m.mem_byte(0x475) == 1, "improved POST: good settings -> the disk is found as before")
+
+
 def defaults(image):
     m = Machine(image)
     for i in range(0x10, 0x80):

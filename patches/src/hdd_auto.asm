@@ -10,7 +10,8 @@
 ; Now:
 ;   * Defaults set C: and D: to type 2/3, "Automatic" (IDENTIFY at each boot),
 ;     and store valid checksums (10h-2Dh in 2Eh/2Fh, NCR 44h-47h in 7Eh/7Fh).
-;   * The disk init runs after a settings loss too. Every path that sets the
+;   * The disk init runs after a settings loss too (three checks of CMOS 0Eh:
+;     F000:42A6, 4325 and 90C4). Every path that sets the
 ;     0Eh error bits loads these defaults in the same boot, so the drive types
 ;     it sees are always sane.
 ;   * Before the controller test, each "Automatic" drive is probed. If nothing
@@ -28,6 +29,24 @@ PROBE_NEW   equ 0x9F5B
 ;; defaults: was 10h = 40h, 44h = E5h, 47h = 4Eh; now through the new routine
     call DEFS_NEW
     jmp short 0x21EB
+
+;@ F000:42A6 max=6
+;; POST: the floppy check and disk init were skipped when CMOS 0Eh reports
+;; lost settings (was "test al,0C0h / je 42AF", then "jmp 4371")
+    jmp short 0x42AF
+    nop
+    nop
+    nop
+    nop
+
+;@ F000:4325 max=6
+;; POST: likewise before the disk init (was "test al,0C0h / jne 433F")
+    nop
+    nop
+    nop
+    nop
+    nop
+    nop
 
 ;@ F000:90C4 max=5
 ;; disk init: no longer skipped when CMOS 0Eh reports lost settings

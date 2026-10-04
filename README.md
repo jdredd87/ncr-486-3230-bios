@@ -19,7 +19,7 @@ Reverse-engineering, fixes and tools for the system BIOS of the **NCR System 323
 | `fancy_boot` | A blue boot screen with a typed-in banner, the credits and a "Press <F1> for SETUP" hint. Errors print in red, warnings in yellow, and list items get bullets. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). The credits also appear on Setup's title line. With the screen switched off, POST looks exactly as before. |
 | `tools_rom` | **NCR 3230 Tools** in the chip's unused 32 KB (E800:0000). **F10** at the end of POST opens the Tools menu, which has six pages: system information (CPU and measured MHz, coprocessor, caches, memory, ports, video, clock), drives (IDE model names for disks and CD-ROMs), memory map with option ROMs, a memory test (conventional and all extended memory, five patterns), a CMOS viewer, and **Hard disk setup** (see below). It also runs NCR's built-in floppy drive test and offers a boot menu. **F8** goes straight to the boot menu, which boots A:, C: or the **CD-ROM** once (see below). With the fancy screen on, a start-up chime plays and a system summary shows for 3 s. "PROCESSOR SPEED" shows the measured clock. If the extension is missing or damaged (signature and checksum are checked), all of this switches itself off. |
 
-Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 230 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` and checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 233 checks). `python tests/preview_screens.py` renders the boot and Setup screens to `build/preview.html`.
 
 **On the real machine (2026-10-03):** the first improved build POSTs and boots, and `ide_atapi_skip` is confirmed. With a CD-ROM attached and no hard disk, POST printed "Disk 0: CD-ROM (ATAPI) found - not a hard disk, skipped" and carried on. The countdown, boot screen, Setup option and Tools are tested only in the emulator so far.
 
@@ -60,7 +60,7 @@ If anything fails (no drive, no disc, a data CD), it prints why and carries on w
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `c6e4f0a00008df09501c91eebba7fd4b3041626a12367dcffe77622b9c2387f4`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `a6c671379fb89f2ef64d8aa5ebe2d7bb6c16962ad41c15622937cac5068ede2f`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
