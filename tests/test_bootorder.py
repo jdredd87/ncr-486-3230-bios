@@ -27,7 +27,7 @@ G_POSTEND = 0xF860 + 3
 ROMBOOT = (0xC800, 0x0100)
 STOPS = {(0x0000, 0x7C00): "boot", (0xF000, 0xE066): "stock", ROMBOOT: "rom"}
 A, C, CD, ROM = 1, 2, 3, 4
-RIGHT, DOWN = 0x4D00, 0x5000
+UP, DOWN, PGUP, PGDN = 0x4800, 0x5000, 0x4900, 0x5100
 
 
 def check(cond, msg):
@@ -96,27 +96,55 @@ def turs(m):
 
 
 # ---------------------------------------------------------------- the editor
+OFF = 8
+
+
+def rows(m):
+    """The four editor rows as (device text, on/off) from the screen."""
+    out = []
+    for line in m.screen_text().splitlines():
+        s = line.strip()
+        if len(s) > 3 and s[0] in "1234" and s[1:3] == ". ":
+            rest = s[3:].strip()
+            out.append((rest.split("  ")[0], "  on" in rest and "  off" not in rest))
+    return out
+
+
 m = setup()
 run_tools(m, [key("o")], page=1)
 t = m.screen_text()
-check("Boot order" in t and "1.    Floppy A:" in t and "4.    Option ROM boot" in t
-      and "BIOS default" in t, "editor: opens from the boot menu (O), starts from A:, C:, CD-ROM, option ROM")
+check(rows(m) == [("Option ROM boot", True), ("Floppy A:", True), ("Hard disk C:", True), ("CD-ROM", False)]
+      and "BIOS default" in t,
+      "editor: opens from the boot menu (O): all four devices, the default (option ROM, A:, C:; CD-ROM off)")
+check("no option ROM hooked the boot" in t, "editor: says when no option ROM hooked the boot")
 m = setup()
-run_tools(m, [key("o"), key(" "), key("s")], page=1)
-check(saved_order(m) == [C, A, CD, ROM] and "Saved: this order is used" in m.screen_text(),
-      "editor: Space on place 1 makes it C: (A: swaps down); S saves to CMOS 4Ah-4Dh")
+run_tools(m, [key("o"), DOWN, DOWN, DOWN, key("+"), key("+"), key("+"), key(" "), key("s")], page=1)
+check(saved_order(m) == [CD, ROM, A, C] and "Saved: this order is used" in m.screen_text(),
+      "editor: + moves CD-ROM to the top, Space turns it on, S saves (CMOS 4Ah-4Dh)")
 m = setup()
-run_tools(m, [key("o"), DOWN, DOWN, RIGHT, RIGHT, RIGHT, key("s")], page=1)
-# place 3 (CD-ROM): -> option ROM (swaps with place 4) -> none -> A: (swaps with place 1)
-check(saved_order(m) == [0, C, A, CD], "editor: arrows move and change places, swapping duplicates")
+run_tools(m, [key("o"), PGDN, PGDN, key(" "), key("s")], page=1)
+check(saved_order(m) == [A, C, ROM | OFF, CD | OFF],
+      "editor: PgDn moves the selected device down (the selection follows); Space turns it off")
+m = setup()
+run_tools(m, [key("o"), DOWN, key("-"), UP, PGUP, key("=")], page=1)
+# A: down (ROM, C:, A:, CD), up to C:, PgUp moves C: to the top, = at the top does nothing
+check([r[0] for r in rows(m)] == ["Hard disk C:", "Option ROM boot", "Floppy A:", "CD-ROM"]
+      and "Not saved yet" in m.screen_text(),
+      "editor: - / = / PgUp move too, and unsaved changes are pointed out")
 m = setup()
 set_order(m, CD, C)
 run_tools(m, [key("o"), key("d")], page=1)
-check(saved_order(m) is None and "BIOS default is used" in m.screen_text(), "editor: D goes back to the BIOS default")
+check(saved_order(m) is None and "BIOS default is used" in m.screen_text()
+      and rows(m)[0] == ("Option ROM boot", True), "editor: D goes back to the BIOS default")
 m = setup()
 set_order(m, CD, C)
 run_tools(m, [key("o"), key(" "), ESC], page=1)
 check(saved_order(m) == [CD, C, 0, 0], "editor: Esc leaves without saving")
+m = setup()
+set_order(m, 0, A, C, CD)                              # saved by the first editor, with a gap
+run_tools(m, [key("o")], page=1)
+check(rows(m) == [("Floppy A:", True), ("Hard disk C:", True), ("CD-ROM", True), ("Option ROM boot", False)],
+      "editor: an order saved with gaps (the first editor) reads as A:, C:, CD-ROM, option ROM off")
 m = setup()
 set_order(m, CD, C)
 run_tools(m, [], page=1)
@@ -143,6 +171,9 @@ m = setup(cd="data")
 set_order(m, CD, C)
 check(boot(m) == "boot" and m.reg("dx") & 0xFF == 0x80 and "not bootable" in m.screen_text(),
       "CD-ROM, C: with a data CD: C: boots")
+m = setup(cd="boot")
+set_order(m, CD | 8, C)
+check(boot(m) == "boot" and m.reg("dx") & 0xFF == 0x80, "CD-ROM switched off, C:: C: boots although a bootable CD is in")
 m = setup(cd="boot")
 set_order(m, C, CD)
 check(boot(m) == "boot" and m.reg("dx") & 0xFF == 0x80, "C:, CD-ROM: C: boots although a bootable CD is in")

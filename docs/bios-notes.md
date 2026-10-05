@@ -53,7 +53,7 @@ Inside the F000 segment:
 - **CMOS 48h** is unused by the stock BIOS (POST's defaults clear only 10h–47h). The `fancy_boot` patch uses it as the boot-screen switch: A5h means off, and anything else means on. Setup's F2 screen toggles it with F3.
 - **CMOS 4Ah–4Dh** are also unused by the stock BIOS. `tools_rom` stores the saved boot order there:
   - 4Ah = `O`;
-  - 4Bh and 4Ch = four device nibbles, the first place in the high nibble of 4Bh (0 none, 1 A:, 2 C:, 3 CD-ROM, 4 option ROM boot);
+  - 4Bh and 4Ch = four device nibbles, the first place in the high nibble of 4Bh (1 A:, 2 C:, 3 CD-ROM, 4 option ROM boot; bit 3 set = switched off). Each device appears once. An older save with gaps (0) is filled up when read, with the missing devices switched off;
   - 4Dh = the NOT of the 8-bit sum of 4Ah–4Ch.
 
   Anything else means the BIOS default. These bytes are outside both checksums and survive POST's defaults, so the check byte guards against garbage after a battery loss.

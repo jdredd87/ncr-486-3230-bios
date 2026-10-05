@@ -41,7 +41,7 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 | `fancy_boot` | The blue boot screen, coloured messages and credits. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). With it off, POST looks exactly as before. |
 | `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, saved boot order, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
 
-Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 296 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 300 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
 
 **Is the Tools area reachable on your board?** The boot screen shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off and everything else works.
 
@@ -71,7 +71,7 @@ A choice from 1–4 applies to this boot only. If it fails, the saved boot order
 
 ### Boot order (F8, then O)
 
-Four places, each one of: Floppy A:, Hard disk C:, CD-ROM, Option ROM boot, or nothing. At every boot they are tried in turn:
+All four devices are always listed, each once: Floppy A:, Hard disk C:, CD-ROM and Option ROM boot. Each is **on** or **off**. At every boot the ones that are on are tried from the top:
 
 - **Floppy A: and hard disk C:** boot if a boot sector can be read. A hard disk also needs the 55AAh signature.
 - **CD-ROM:** a bootable disc boots. With no disc, it gives up after about 2 s. A disc still spinning up is waited for, and Esc skips it.
@@ -80,11 +80,12 @@ Four places, each one of: Floppy A:, Hard disk C:, CD-ROM, Option ROM boot, or n
 
 | Key | Does |
 |---|---|
-| ↑ ↓ | Choose a place |
-| ← → or Space | Change the device in that place. A device already used elsewhere swaps places with it. |
+| ↑ ↓ | Select a device |
+| + / − (or PgUp / PgDn) | Move the selected device up or down. The selection moves with it. |
+| Space or Enter | Turn the selected device on or off (off: listed, but skipped at boot) |
 | S | Save (CMOS 4Ah–4Dh, with a check byte) |
 | D | Back to the BIOS default |
-| Esc | Leave without saving |
+| Esc | Leave without saving ("Not saved yet" shows while there are changes) |
 
 Until an order is saved, the **BIOS default** applies: an option ROM's own boot first (if a card hooked the boot), then A: and C: as Setup sets them. The order needs a working CMOS battery. Without one it is lost at power-off, and the default applies. The system summary shows the order in use.
 
@@ -151,7 +152,7 @@ The ROM area E8000–EFFFF holds code that runs after boot: large-disk mode and 
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `45bd15d0f44b558d27ded04c85b5422fd34916877ed9b8a3fa708e91a010878b`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `d2a525448276c3044cbe573ca66601df50fb5bc0b2a4908f5ad072d643359fab`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
