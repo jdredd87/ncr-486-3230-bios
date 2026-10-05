@@ -8,6 +8,9 @@ Writes an HTML page (default build/preview.html) with these screens:
   3. Setup main screen
   4. Setup F2 screen with the new option
   5. Setup F2 screen after pressing F3
+  6. end-of-POST system summary (with its countdown)
+  7. Tools menu, Drives (with a disk in LBA mode), Hard disk setup
+  8. boot menu with an option ROM (a stand-in for the PicoMEM) that hooked INT 19h
 Each screen also prints as text so the run can be checked in a terminal.
 """
 import os
@@ -16,7 +19,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-from emu import Machine, StopEmu, cmos_checksum  # noqa: E402
+from emu import AtaDisk, Atapi, IdeChannel, Machine, StopEmu, cmos_checksum  # noqa: E402
+
+sys.path.insert(0, HERE)
+import tools_harness as th  # noqa: E402
 
 IMAGE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build", "NCR3230-203-improved.BIN")
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, "build", "preview.html")
@@ -74,6 +80,32 @@ def setup_screen(keys):
     return m
 
 
+def summary_screen():
+    m = th.machine(master="disk", slave="cdrom")
+    m.keys = [0x3920, 0x1C0D]                        # Space holds it, Enter ends it
+    try:
+        m.near_call(0xF000, th.G_BASE + 3, max_insns=200_000_000, ss=0, sp=0x0400)
+    except StopEmu:
+        pass
+    return m
+
+
+def tools_screen(keys, page=0, big_disk=False, rom_hook=False):
+    m = th.machine(flag=0xA5)
+    if big_disk:                                     # POST disk init + LBA set-up, 2 GB disk
+        m.ide = IdeChannel(m, AtaDisk(4092, 16, 63, "QUANTUM FIREBALL 2.1GB"),
+                           Atapi(model="TOSHIBA CD-ROM XM-5302TA"))
+        m.cmos[0x12] = 0x20
+        m.write(0x4AE, bytes([1, 0]))
+        m.run_to_any(0xF000, 0x4293, {(0xF000, 0x4371): "after"}, max_insns=400_000_000, ss=0, sp=0x400)
+    if rom_hook:
+        m.write(0xC8100, bytes([0xEB, 0xFE]))
+        m.set_vector(0x19, 0xC800, 0x0100)
+        m.near_call(0xF000, th.G_BASE + 3, max_insns=200_000_000, ss=0, sp=0x0400)
+    th.run_tools(m, keys, page=page)
+    return m
+
+
 def main():
     shots = [
         ("POST with the fancy screen (an error countdown at the bottom)", post_screen()),
@@ -81,6 +113,11 @@ def main():
         ("Setup: main screen", setup_screen([])),
         ("Setup: F2 screen with the new option", setup_screen([0x3C00])),
         ("Setup: F2 screen after pressing F3", setup_screen([0x3C00, 0x3D00])),
+        ("End of POST: system summary (Space held it)", summary_screen()),
+        ("Tools menu (F10)", tools_screen([])),
+        ("Tools: Drives, with a 2 GB disk in LBA mode", tools_screen([th.key("2")], big_disk=True)),
+        ("Tools: Hard disk setup", tools_screen([th.key("7")], big_disk=True)),
+        ("Boot menu (F8) with an option ROM such as the PicoMEM", tools_screen([], page=1, rom_hook=True)),
     ]
     html = ['<!doctype html><meta charset="utf-8"><title>NCR 3230 BIOS preview</title>',
             '<style>body{background:#222;color:#ddd;font:14px system-ui;margin:16px}'

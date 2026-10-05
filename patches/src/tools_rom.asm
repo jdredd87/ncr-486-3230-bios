@@ -38,7 +38,14 @@ X_POSTEND   equ 0x000D
 X_MHZ       equ 0x0010
 X_BOOT      equ 0x0013
 X_HDINIT    equ 0x0016
+X_CAPTURE   equ 0x0019
+ROM19       equ 0xEF06              ; F000 shadow: an option ROM's INT 19h (dword) ...
+ROM19_OK    equ 0xEF0A              ; ... and 1 if it is valid
+BOOT_STATE  equ 0x04F3              ; 0000:04F3 during INT 19h: 0 undecided, 'B' BIOS first,
+                                    ; 'R' option ROM chosen, 'P' option ROM had its turn
+ORDER_INDEX equ 0x4A                ; CMOS 4Ah: 'B' = BIOS boot first, else option ROM first
 FLAG_INDEX  equ 0xC8                ; CMOS 48h: fancy boot screen (A5h = off)
+SUMMARY_TICKS equ 146               ; end-of-POST summary: 8 s
 BEEP        equ 0x4F7D
 PRINT2      equ 0x4DD2              ; prints AX as two digits + " MHz"
 NCR_FDTEST  equ 0x0C00
@@ -46,6 +53,7 @@ INT19_ORIG  equ 0xE066
 DISK_INIT   equ 0x9062              ; POST hard disk init
 BOOT_MAGIC  equ 0x424E              ; "NB" at 0000:04F0 (inter-application area)
 CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulation drive number
+ROM_CHOICE  equ 0xFE                ; boot choice "option ROM boot"
 
 ; ------------------------------------------------------------------ F000 hooks
 
@@ -71,6 +79,11 @@ CD_DRIVE    equ 0xE0                ; boot choice "CD-ROM"; also the no-emulatio
 ;@ F000:436E max=3
 ;; POST: was "call 9062" (hard disk init); now also sets up large disks
     call G_HDINIT
+
+;@ F000:EF06 max=5 free
+;; reserved: an option ROM's INT 19h (e.g. the PicoMEM's), saved at the end
+;; of POST into the shadowed F000 (see capture19)
+    times 5 db 0
 
 ;@ F000:EED6 max=0x30 free
 ;; reserved: large-disk (LBA) tables and the chain to the stock INT 13h,
@@ -145,6 +158,7 @@ g_fdtest:                           ; far, from the extension
 g_postend:                          ; replaces the end-of-POST beep
     call ext_ok
     jc .beep
+    call EXT_SEG:X_CAPTURE          ; an option ROM's INT 19h: the BIOS keeps the vector
     push ax
     pushf
     cli
@@ -242,7 +256,22 @@ g_hdinit:                           ; POST disk init, then large-disk (LBA) mode
 g_boot:                             ; INT 19h
     call ext_ok
     jc .normal
-    call EXT_SEG:X_BOOT             ; returns only if there is no override
+    call EXT_SEG:X_BOOT             ; boots the boot menu's choice; otherwise returns
+    push ds
+    push 0
+    pop ds
+    cmp byte [BOOT_STATE], 'R'      ; boot menu: the option ROM's own boot
+    je .rom
+    cmp byte [BOOT_STATE], 0        ; nothing decided: an option ROM goes first
+    jne .bios
+.rom:
+    cmp byte [cs:ROM19_OK], 1
+    jne .bios
+    mov byte [BOOT_STATE], 'P'      ; once: its fall-back calls INT 19h again
+    pop ds
+    jmp far [cs:ROM19]
+.bios:
+    pop ds
 .normal:
     jmp INT19_ORIG
 
@@ -261,6 +290,7 @@ ext_start:
     jmp near mhz_entry              ; 0010
     jmp near boot_entry             ; 0013
     jmp near hdinit_entry           ; 0016
+    jmp near capture_entry          ; 0019
 
 ; ------------------------------------------------------------------ variables (GS = VARSEG)
 V_VSEG      equ 0x00
@@ -404,6 +434,7 @@ mhz_entry:                          ; returns AX = MHz (0 = failed)
 boot_entry:                         ; returns (CF=1) when there is no override
     ENTER
     call boot_override
+    call boot_order
     LEAVE
     stc
     retf
@@ -1516,7 +1547,7 @@ page_menu:
     mov byte [gs:V_ATTR], A_DIM
     mov dx, 0x0403
     call goto_rc
-    SAY "Information and tests for this machine. Only Hard disk setup changes settings."
+    SAY "Information and tests. Hard disk setup and the boot order are saved in CMOS."
     xor cx, cx
 .item:
     mov dh, cl
@@ -2732,6 +2763,7 @@ page_boot_menu:                     ; from the Tools menu: CF=1 leaves Tools aft
     ret
 
 page_boot:                          ; CF=1 if a device was chosen
+.draw:
     mov si, t_boot
     mov bx, h_boot
     call frame
@@ -2768,12 +2800,44 @@ page_boot:                          ; CF=1 if a device was chosen
     mov byte [gs:V_ATTR], A_VALUE
     mov dx, 0x0D05
     call goto_rc
-    SAY "Esc  Normal boot order"
+    call rom_boot
+    jc .norom
+    SAY "4  Option ROM boot "
     mov byte [gs:V_ATTR], A_DIM
-    mov dx, 0x1003
+    mov al, '('
+    call putc
+    call rom_name                   ; ES = the ROM's segment
+    mov al, ')'
+    call putc
+    jmp short .esc
+.norom:
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "4  Option ROM boot (no option ROM hooked the boot)"
+.esc:
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0F05
     call goto_rc
-    SAY "The choice applies to this boot only; Setup is not changed.", 3
-    SAY "CD-ROM boot needs a bootable (El Torito) disc on the IDE drive."
+    SAY "Esc  Normal boot order"
+    mov dx, 0x1203
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "Normal boot order (O changes it, saved in CMOS):", 3
+    mov byte [gs:V_ATTR], A_VALUE
+    SAY "  "
+    mov al, ORDER_INDEX
+    call cmos_read
+    cmp al, 'B'
+    je .bfirst
+    SAY "an option ROM's own boot first (e.g. PicoMEM), then A:, C:"
+    jmp short .notes
+.bfirst:
+    SAY "BIOS first: A:, C:  (option ROM boot only with 4)"
+.notes:
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1503
+    call goto_rc
+    SAY "1-4 apply to this boot only. CD-ROM boot needs a bootable (El Torito) disc.", 3
+    SAY "With a PicoMEM that emulates a hard disk, C: may be its disk image."
 .k:
     call getkey
     cmp ah, 0x01
@@ -2784,7 +2848,26 @@ page_boot:                          ; CF=1 if a device was chosen
     je .c
     cmp al, '3'
     je .cd
-    jmp short .k
+    cmp al, '4'
+    je .rom
+    or al, 0x20
+    cmp al, 'o'
+    jne .k
+    mov al, ORDER_INDEX
+    call cmos_read
+    xor ah, ah
+    cmp al, 'B'
+    je .flip
+    mov ah, 'B'
+.flip:
+    mov al, ORDER_INDEX
+    call cmos_write
+    jmp .draw
+.rom:
+    call rom_boot
+    jc .k
+    mov al, ROM_CHOICE
+    jmp short .set
 .a:
     xor al, al
     jmp short .set
@@ -2805,8 +2888,86 @@ page_boot:                          ; CF=1 if a device was chosen
 .none:
     clc
     ret
+
+rom_boot:                           ; CF=0 if an option ROM's INT 19h was kept: ES = its segment
+    push ax
+    push 0xF000
+    pop es
+    cmp byte [es:ROM19_OK], 1
+    jne .no
+    mov ax, [es:ROM19 + 2]
+    mov es, ax
+    pop ax
+    clc
+    ret
+.no:
+    pop ax
+    stc
+    ret
+
 t_boot: db "Boot menu", 0
-h_boot: db "1-3 Choose   Esc Normal boot order", 0
+h_boot: db "1-4 Choose   O Normal boot order   Esc Continue", 0
+
+capture_entry:                      ; far, end of POST
+    ENTER
+    call capture19
+    LEAVE
+    retf
+
+; Option ROMs such as the PicoMEM's hook INT 19h and boot their own way,
+; which leaves the boot menu no say. At the end of POST the BIOS takes INT 19h
+; back and keeps the ROM's handler, called first unless the boot menu chose
+; something else or the boot order says "BIOS first" (see g_boot).
+capture19:
+    push 0
+    pop es
+    mov byte [es:BOOT_STATE], 0
+    push 0xF000
+    pop fs
+    mov eax, [es:0x19 * 4]
+    cmp eax, 0xF000E6F2
+    je .none
+    cmp eax, [fs:ROM19]             ; already saved (shadow kept from the last boot)?
+    jne .save
+    cmp byte [fs:ROM19_OK], 1
+    je .take
+.save:
+    call shadow_open
+    mov [fs:ROM19], eax
+    mov byte [fs:ROM19_OK], 1
+    mov bx, [es:0x7000]             ; a RAM read before locking, as POST does
+    call shadow_lock
+    cmp eax, [fs:ROM19]             ; no shadow RAM: leave INT 19h with the ROM
+    jne .x
+.take:
+    cli
+    mov dword [es:0x19 * 4], 0xF000E6F2
+    sti
+.x:
+    ret
+.none:
+    cmp byte [fs:ROM19_OK], 0
+    je .x
+    call shadow_open
+    mov byte [fs:ROM19_OK], 0
+    mov bx, [es:0x7000]
+    call shadow_lock
+    ret
+
+boot_order:                         ; nothing decided and CMOS 4Ah = 'B': BIOS boot first
+    push ds
+    push 0
+    pop ds
+    cmp byte [BOOT_STATE], 0
+    jne .x
+    mov al, ORDER_INDEX
+    call cmos_read
+    cmp al, 'B'
+    jne .x
+    mov byte [BOOT_STATE], 'B'
+.x:
+    pop ds
+    ret
 
 ; INT 19h: if the boot menu left a choice, try that device once.
 boot_override:
@@ -2817,6 +2978,11 @@ boot_override:
     jne .no
     mov dl, [0x4F2]
     mov word [0x4F0], 0
+    cmp dl, ROM_CHOICE
+    jne .cd
+    mov byte [BOOT_STATE], 'R'      ; the option ROM's boot: g_boot calls it
+    jmp short .no
+.cd:
     cmp dl, CD_DRIVE
     jne .disk
     pop ds
@@ -3942,11 +4108,13 @@ hd_setup:
     ret
 
 shadow_open:                        ; chipset 9Bh bit 0 clear: the F000 shadow is writable
+    push ax
     mov al, 0x9B
     call chip_read
     and al, 0xFE
     jmp short shadow_set
 shadow_lock:
+    push ax
     mov al, 0x9B
     call chip_read
     or al, 0x01
@@ -3959,6 +4127,7 @@ shadow_set:
     mov al, ah
     out 0x24, al
     popf
+    pop ax
     ret
 
 ; INT 13h for large disks. Not ours: straight on to the stock handler.
@@ -4917,25 +5086,66 @@ page_summary:
     call hline
     mov dx, 0x1801
     call goto_rc
-    SAY "F1 Setup   F8 Boot menu   F10 Tools   any other key: boot now"
+    SAY "F1 Setup  F8 Boot menu  F10 Tools  Space holds  other keys boot"
     push es
     mov ax, 0x40
     mov es, ax
     mov bx, [es:0x6C]
+    mov cl, 0xFF                    ; seconds last shown
     xor di, di
-    mov si, 4
+    mov si, 100                     ; fall-back if the timer does not tick
 .wait:
-    mov ah, 1
-    int 0x16
-    jnz .end
     mov ax, [es:0x6C]
     sub ax, bx
-    cmp ax, 54
+    cmp ax, SUMMARY_TICKS
     jae .end
+    neg ax                          ; seconds left, rounded up
+    add ax, SUMMARY_TICKS + 17
+    xor dx, dx
+    push bx
+    mov bx, 18
+    div bx
+    pop bx
+    cmp al, cl
+    je .key
+    mov cl, al
+    push ax
+    mov dx, 0x184A
+    call goto_rc
+    mov byte [gs:V_ATTR], A_BAR
+    pop ax
+    movzx eax, al
+    call putdec
+    SAY " s "
+.key:
+    mov ah, 1
+    int 0x16
+    jnz .pressed
     dec di
     jnz .wait
     dec si
     jnz .wait
+    jmp short .end
+.pressed:
+    cmp al, ' '                     ; Space: keep the summary until another key
+    jne .end
+    xor ah, ah
+    int 0x16
+    mov dx, 0x184A
+    call goto_rc
+    SAY "held "
+.hold:
+    mov ah, 1
+    int 0x16
+    jz .hold
+    cmp ax, 0x3B00                  ; F1, F8, F10 are left for POST to act on
+    je .end
+    cmp ax, 0x4200
+    je .end
+    cmp ax, 0x4400
+    je .end
+    xor ah, ah
+    int 0x16                        ; any other key boots (taken, so POST ignores it)
 .end:
     pop es
     ret

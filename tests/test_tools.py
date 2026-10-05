@@ -228,5 +228,107 @@ check(r == "normal" and "did not boot" in m.text(), "boot menu: failing device -
 r, m = boot(True, 0x80, prep=no_extension)
 check(r == "normal", "boot menu: without the extension INT 19h is unchanged")
 
+# ---------------------------------------------------------------- summary timing
+def ticking(m):
+    """Each INT 16h poll advances the BIOS tick count by one (18.2 per second)."""
+    orig = m._int16
+    state = {"ticks": 0}
+
+    def stub():
+        if m.reg("ax") >> 8 == 1 and not m.keys:
+            m.write(0x46C, struct.pack("<H", (m.mem_word(0x46C) + 1) & 0xFFFF))
+            state["ticks"] += 1
+        orig()
+    m.stubs[0x16] = stub
+    return state
+
+
+m = machine()
+st = ticking(m)
+m.near_call(0xF000, G_BASE + 3, max_insns=400_000_000, **POST_STACK)
+check(145 <= st["ticks"] <= 147, "summary: shown for 8 s with no key (%d ticks)" % st["ticks"])
+m = machine()
+m.keys = [0x3920, ENTER]
+m.near_call(0xF000, G_BASE + 3, max_insns=200_000_000, **POST_STACK)
+check("held" in text(m) and m.keys == [], "summary: Space holds it; the next key boots and is taken")
+m = machine()
+m.keys = [0x3920, F10]
+m.near_call(0xF000, G_BASE + 3, max_insns=200_000_000, **POST_STACK)
+check(m.keys == [F10], "summary: after Space, F10 is left for POST (opens Tools)")
+
+# ---------------------------------------------------------------- option ROM boot (PicoMEM)
+ROMBOOT = (0xC800, 0x0100)                       # the fake option ROM's INT 19h
+B19STOPS = {(0x0000, 0x7C00): "bootsector", (0xF000, 0xE066): "bios", ROMBOOT: "rom"}
+
+
+def hooked(m):
+    m.write(0xC8100, b"\xEB\xFE")
+    m.set_vector(0x19, *ROMBOOT)                 # as the PicoMEM ROM does at its init
+
+
+def postend(m):
+    m.near_call(0xF000, G_BASE + 3, max_insns=200_000_000, **POST_STACK)
+
+
+def boot19(m):
+    try:
+        return m.run_to_any(0xF000, 0xE6F2, B19STOPS, max_insns=400_000_000, ss=0, sp=0x7B00)
+    except StopEmu as e:
+        return str(e)
+
+
+m = machine(flag=0xA5)
+hooked(m)
+postend(m)
+saved = [(a, p) for a, _, _, p in m.rom_writes if 0xFEF06 <= a < 0xFEF0B]
+check(m.vector(0x19) == (0xF000, 0xE6F2) and m.read(0xFEF06, 5) == struct.pack("<HHB", 0x0100, 0xC800, 1)
+      and saved and all(p == 0 for a, p in saved), "option ROM: INT 19h taken back at the end of POST, ROM's kept")
+check(boot19(m) == "rom" and m.mem_byte(0x4F3) == ord("P"), "option ROM: by default its own boot runs first")
+check(boot19(m) == "bios", "option ROM: when it falls back to INT 19h, the BIOS boot order follows")
+
+m = machine(flag=0xA5)
+hooked(m)
+postend(m)
+m.cmos[0x4A] = ord("B")
+check(boot19(m) == "bios", "option ROM: boot order 'BIOS first' (CMOS 4Ah) skips the ROM's boot")
+
+m = machine(flag=0xA5, master="disk")
+m.cmos[0x12] = 0x20
+m.write(0x4AE, struct.pack("<H", 1))
+m.set_vector(0x13, 0xF000, 0xEC59)
+m.near_call(0xF000, 0x9062, max_insns=400_000_000, ds=0x40, es=0, **POST_STACK)
+s0 = bytearray(512)
+s0[0:2], s0[510:512] = b"\xEB\xFE", b"\x55\xAA"
+m.ide.dev[0].sectors[0] = bytes(s0)
+hooked(m)
+postend(m)
+m.write(0x4F0, struct.pack("<HB", 0x424E, 0x80))
+check(boot19(m) == "bootsector", "option ROM: a boot menu choice (C:) wins over the ROM's boot")
+
+m = machine(flag=0xA5)
+hooked(m)
+postend(m)
+run_tools(m, [], page=1)
+t = text(m)
+check("4  Option ROM boot (PicoMEM BIOS v1.2 (test ROM))" in t and "option ROM's own boot first" in t,
+      "boot menu: lists the option ROM's boot by name, and the normal order")
+run_tools(m, [key("o")], page=1)
+check(m.cmos[0x4A] == ord("B") and "BIOS first: A:, C:" in text(m), "boot menu: O switches the order to BIOS first")
+run_tools(m, [key("o")], page=1)
+check(m.cmos[0x4A] != ord("B"), "boot menu: O switches it back")
+r = run_tools(m, [key("4")], page=1)
+img = open(os.path.join(HERE, "..", "build", "NCR3230-203-improved.BIN"), "rb").read()
+check(r == "returned" and m.mem_byte(0x4F2) == 0xFE and m.read(0xE8000, 0x8000) == img[0x8000:0x10000],
+      "boot menu: 4 chooses the option ROM's boot once (Tools returns, ROM untouched)")
+m.cmos[0x4A] = ord("B")
+check(boot19(m) == "rom", "option ROM: chosen with 4, it boots even with 'BIOS first'")
+
+m = machine(flag=0xA5)
+postend(m)
+check(m.vector(0x19) == (0xF000, 0xE6F2) and m.mem_byte(0xFEF0A) == 0 and boot19(m) == "bios",
+      "no option ROM hook: INT 19h as before")
+run_tools(m, [], page=1)
+check("no option ROM hooked the boot" in text(m), "boot menu: says when there is no option ROM boot")
+
 print("\n%d failed" % len(failed) if failed else "\nall passed")
 sys.exit(1 if failed else 0)

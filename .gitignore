@@ -9,3 +9,6 @@ userhdd/sim/
 # Build output: only the flashable image is kept in git
 build/*
 !build/NCR3230-203-improved.BIN
+
+# Personal helper scripts
+resume.bat

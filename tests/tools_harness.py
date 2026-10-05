@@ -52,7 +52,8 @@ def run_tools(m, keys, page=0, max_insns=200_000_000):
     """Run the Tools entry with queued keys until it waits for more input or returns."""
     m.keys = list(keys)
     try:
-        m.far_call(0xE800, 0x000A, ax=page, max_insns=max_insns)
+        # the caller's stack must not be the Tools' own private stack at 0000:7000
+        m.far_call(0xE800, 0x000A, ax=page, max_insns=max_insns, ss=0, sp=0x7B00)
         return "returned"
     except StopEmu as e:
         return str(e)
