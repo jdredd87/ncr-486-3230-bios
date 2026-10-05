@@ -24,7 +24,7 @@ if len(sys.argv) <= 1:
 failed = []
 
 MSG = {"heading": 0x5408, "kbd_error": 0x53C6, "battery": 0x5513, "disk_fail": 0x9034,
-       "cache": 0x5672, "keyboard": 0x5349}
+       "cache": 0x5672, "keyboard": 0x5349, "interrupts": 0x527F}
 
 
 def check(cond, msg):
@@ -99,6 +99,11 @@ r, c = row_of(m, "Disk controller failure")
 check(r is not None and m.cell(r, c)[1] == 0x1C, "colour: 'failure' message in red")
 r, c = row_of(m, "** Battery Power Lost")
 check(r is not None and m.cell(r, c)[1] == 0x1E, "colour: '**' warning in yellow")
+mi = post(IMPROVED, messages=("heading", "interrupts", "kbd_error"))
+r, c = row_of(mi, "INTERRUPT CONTROLLERS")
+check(r is not None and mi.cell(r, c)[1] == 0x17, "colour: 'INTERRUPT CONTROLLERS' (a test name with RR) is not red")
+r, c = row_of(mi, "Keyboard Error or Keyboard Missing")
+check(r is not None and mi.cell(r, c)[1] == 0x1C, "colour: ...while 'Error' still is")
 
 # ---------------------------------------------------------------- switched off = original
 o = post(ORIGINAL)

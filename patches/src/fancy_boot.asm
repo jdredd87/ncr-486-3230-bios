@@ -249,7 +249,7 @@ cputs:
     jne .scan
     mov dl, dh
     or dl, 0x0E                 ; "**" warning: yellow
-.scan:                          ; "rro" / "RRO" / "ilu" anywhere: error, red
+.scan:                          ; "rro" / "RRO" / "ilu" / "ILU" anywhere: error, red
     push si
 .look:
     mov al, [es:si]
@@ -257,13 +257,20 @@ cputs:
     cmp al, '@'
     je .looked
     mov ah, [es:si]
-    cmp ax, 0x7272              ; "rr"
-    je .err
-    cmp ax, 0x5252              ; "RR"
-    je .err
-    cmp ax, 0x6C69              ; "il" ... check "u"
+    mov bl, 'o'
+    cmp ax, 0x7272              ; "rr" ... "o" (not "Interrupt")
+    je .third
+    mov bl, 'O'
+    cmp ax, 0x5252              ; "RR" ... "O" (not "INTERRUPT CONTROLLERS")
+    je .third
+    mov bl, 'u'
+    cmp ax, 0x6C69              ; "il" ... "u"
+    je .third
+    mov bl, 'U'
+    cmp ax, 0x4C49              ; "IL" ... "U"
     jne .look
-    cmp byte [es:si+1], 'u'
+.third:
+    cmp [es:si+1], bl
     jne .look
 .err:
     mov dl, dh
