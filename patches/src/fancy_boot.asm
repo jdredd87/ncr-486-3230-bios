@@ -2,8 +2,8 @@
 ;
 ; * Splash (F000:32A5): POST clears the screen and prints "ROM BIOS Version".
 ;   Before that, the screen is now painted blue and a double-line banner is
-;   typed in: "NCR System 3230 . 486 BIOS 517-0000672 v2.03.00 . Enhanced
-;   Edition", a small colour stripe, and "Enhanced by StevenC & Claude .
+;   typed in: "NCR System 3230 . 486 BIOS v2.03.00 . Enhanced Edition 1.0"
+;   (the version comes from version.inc), a small colour stripe, and "Enhanced by StevenC & Claude .
 ;   Press <F1> for SETUP". About 0.3 s. Monochrome adapters get the banner
 ;   without colour; other video modes get nothing.
 ; * Coloured messages (F000:4D11, the POST message printer): while the blue
@@ -15,6 +15,8 @@
 ;   it on. Setup's F2 screen shows "Fancy Boot Screen: Yes/No" and F3 toggles
 ;   it (written to CMOS at once).
 ; * Credits on Setup's title line.
+
+%include "version.inc"
 
 VERSION_LINE equ 0x4C88       ; prints "ROM BIOS Version ..."
 SPLASH       equ 0xEC60
@@ -199,9 +201,9 @@ delay:
 row1:
     db 1, 0x1F, "NCR System 3230"
     db 1, 0x13, " ", 0xFA, " "
-    db 1, 0x17, "486 BIOS 517-0000672 v2.03.00"
+    db 1, 0x17, "486 BIOS v2.03.00"
     db 1, 0x13, " ", 0xFA, " "
-    db 1, 0x1F, "Enhanced Edition", 1, 0x17, "   "
+    db 1, 0x1F, "Enhanced Edition ", ED_VERSION, 1, 0x17, "   "
     db 1, 0x1C, 0xDC, 1, 0x1E, 0xDC, 1, 0x1A, 0xDC, 1, 0x1B, 0xDC, 1, 0x19, 0xDC, 1, 0x1D, 0xDC
     db 0
 row2:
@@ -465,6 +467,5 @@ stub_key:
 ;@ FA40:3BA0 max=0x60 free
 ;; Setup title: column 3, row 0
     db 3, 0
-    db "Setup, Version 2.01.00 (3230)"
-    times 16 db " "
-    db "Enhanced by StevenC & Claude", 13, 10, 0
+    db "Setup, Version 2.01.00 (3230)   "
+    db "Enhanced Edition ", ED_VERSION, " by StevenC & Claude", 13, 10, 0

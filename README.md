@@ -3,7 +3,7 @@
 Reverse-engineering, fixes and new features for the system BIOS of the **NCR System 3230** (486, BIOS 517-0000672 v2.03.00, chip U19, dated 10/08/93).
 
 - **`NCR-BIOS-517-0000672-VER2.03.00-U19.BIN`** is the original ROM dump. It is never modified.
-- **`build/NCR3230-203-improved.BIN`** is the improved ROM, ready to program into a chip.
+- **`build/NCR3230-203-improved.BIN`** is the improved ROM, **Enhanced Edition 1.0**, ready to program into a chip. See [CHANGELOG.md](CHANGELOG.md) for what each version contains.
 - **`userhdd/dos/userhdd.exe`** replaces NCR's lost USERHDD.EXE. It is needed only with the original ROM.
 
 ## What the improved ROM does
@@ -41,7 +41,7 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 | `fancy_boot` | The blue boot screen, coloured messages and credits. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). With it off, POST looks exactly as before. |
 | `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, saved boot order, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
 
-Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 300 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 303 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
 
 **Is the Tools area reachable on your board?** The boot screen shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off and everything else works.
 
@@ -152,9 +152,13 @@ The ROM area E8000–EFFFF holds code that runs after boot: large-disk mode and 
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `d2a525448276c3044cbe573ca66601df50fb5bc0b2a4908f5ad072d643359fab`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `9b4fce54b8798ca6b9b203b29fe11fcef60ab2cd664915087192344127d98702`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
+
+### Which version is in the chip?
+
+The version shows on the boot screen ("Enhanced Edition 1.0"), in the end-of-POST summary, on Setup's title line, and in Tools → System information, with its release date. To make a new version, change `patches/src/version.inc`, add an entry to [CHANGELOG.md](CHANGELOG.md), rebuild, and tag the commit (`git tag v1.1`). The build prints the version with the SHA-256. The NCR BIOS's own version (2.03.00) and date (10/08/93) stay as they are, because DOS-era software reads them.
 
 ## USERHDD.EXE
 
@@ -191,7 +195,7 @@ Build USERHDD from `userhdd/`:
 
 | Folder | Contents |
 |---|---|
-| `patches/src/` | Patch sources (NASM). `patches/*.patch` are generated from them. |
+| `patches/src/` | Patch sources (NASM). `patches/*.patch` are generated from them. `version.inc` holds the Enhanced Edition version. |
 | `tools/` | Disassembler, patch assembler and applier, ROM builder, checksum fixer, emulator (`emu.py`: CPU, CMOS, IDE disks, ATAPI CD-ROM with ISO images, video; `dosemu.py`), `userhdd.py` (DEBUG-script fallback for USERHDD) |
 | `tests/` | Emulator tests: `test_patches` (POST fixes), `test_fancy` (boot screen, Setup option), `test_tools` (Tools, summary, boot menu, option ROMs), `test_cdboot` (El Torito ISOs built on the fly by `isotools.py`), `test_bootorder`, `test_hdsetup`, `test_lba` (2 GB and 34 GB disks), `test_userhdd*` |
 | `out/` | Disassembly listings of the system BIOS and the Setup module |

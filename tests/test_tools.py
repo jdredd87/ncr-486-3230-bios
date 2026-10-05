@@ -330,5 +330,19 @@ check(m.vector(0x19) == (0xF000, 0xE6F2) and m.mem_byte(0xFEF0A) == 0 and boot19
 run_tools(m, [], page=1)
 check("no option ROM hooked the boot" in text(m), "boot menu: says when there is no option ROM boot")
 
+# ---------------------------------------------------------------- our version (version.inc)
+sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+from version import ED_DATE, ED_VERSION  # noqa: E402
+m = machine(flag=0xA5)
+run_tools(m, [key("1")])
+check("Enhanced Edition      %s  (%s, StevenC & Claude)" % (ED_VERSION, ED_DATE) in text(m),
+      "version: System information shows Enhanced Edition %s (%s)" % (ED_VERSION, ED_DATE))
+m = machine()
+m.keys = [ENTER]
+m.near_call(0xF000, G_BASE + 3, max_insns=200_000_000, **POST_STACK)
+check("Enhanced Edition %s" % ED_VERSION in text(m).splitlines()[1], "version: shown in the summary's title box")
+major, minor = (int(x) for x in ED_VERSION.split("."))
+check(m.read(0xE8008, 2) == bytes([major, minor]), "version: stored in the Tools header (E800:0008)")
+
 print("\n%d failed" % len(failed) if failed else "\nall passed")
 sys.exit(1 if failed else 0)

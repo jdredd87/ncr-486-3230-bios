@@ -21,6 +21,8 @@
 ; extended memory, flat real mode), CMOS viewer, NCR's built-in floppy
 ; drive test (hidden behind Ctrl-D in the stock BIOS), boot menu.
 
+%include "version.inc"
+
 ; ------------------------------------------------------------------ addresses
 
 EXT_SEG     equ 0xE800
@@ -288,7 +290,7 @@ ext_start:
     db "NCRX"
     dw ext_end - ext_start          ; size covered by the checksum
     dw 0                            ; checksum, filled in by fix_checksum.py
-    db 1, 0                         ; version
+    db ED_MAJOR, ED_MINOR           ; Enhanced Edition version (version.inc)
     jmp near tools_entry            ; 000A
     jmp near postend_entry          ; 000D
     jmp near mhz_entry              ; 0010
@@ -1714,8 +1716,12 @@ page_sysinfo:
     mov dh, 19
     mov si, l_bios
     call label
-    SAY "NCR 517-0000672 v2.03.00 (10/08/93), Enhanced Edition"
+    SAY "NCR 517-0000672 v2.03.00 (10/08/93)"
     mov dh, 20
+    mov si, l_edition
+    call label
+    SAY ED_VERSION, 1, A_DIM, "  (", ED_DATE, ", StevenC & Claude)", 1, A_VALUE
+    mov dh, 21
     mov si, l_tools
     call label
     SAY "E800:0000, "
@@ -1785,6 +1791,7 @@ l_video: db "Video", 0
 l_clock: db "Real-time clock", 0
 l_bios: db "BIOS", 0
 l_tools: db "Tools extension", 0
+l_edition: db "Enhanced Edition", 0
 s_fpu_yes: db "present", 0
 s_fpu_no: db "not present", 0
 
@@ -5424,6 +5431,9 @@ page_summary:
     call putc
     mov byte [gs:V_ATTR], A_VALUE
     SAY " NCR System 3230 ", 1, A_DIM, 0xFA, 1, A_VALUE, " System summary"
+    mov dx, 0x013A
+    call goto_rc
+    SAY 1, A_DIM, "Enhanced Edition ", ED_VERSION, 1, A_VALUE
     mov dx, 0x014F
     call goto_rc
     mov byte [gs:V_ATTR], A_BOX

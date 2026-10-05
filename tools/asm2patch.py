@@ -45,12 +45,16 @@ def image_offset(seg, off):
     return SEGS[seg] + off
 
 
+SRC_DIR = os.path.join(HERE, "..", "patches", "src")
+
+
 def assemble(header, body, org, name):
     src = "bits 16\norg 0x%X\n%s\n%s\n" % (org, header, body)
     with tempfile.TemporaryDirectory() as d:
         a, b = os.path.join(d, "p.asm"), os.path.join(d, "p.bin")
         open(a, "w").write(src)
-        r = subprocess.run([nasm(), "-f", "bin", "-o", b, a], capture_output=True, text=True)
+        inc = os.path.abspath(SRC_DIR) + os.sep           # %include "version.inc"
+        r = subprocess.run([nasm(), "-f", "bin", "-i", inc, "-o", b, a], capture_output=True, text=True)
         if r.returncode:
             raise SystemExit("nasm failed in chunk %s:\n%s" % (name, r.stderr))
         return open(b, "rb").read()

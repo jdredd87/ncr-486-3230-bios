@@ -104,7 +104,8 @@ Zero-filled areas in the F000 segment:
 
 ### The Tools extension (E800:0000)
 
-- **Location.** `tools_rom` puts a 15.5 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
+- **Version.** `patches/src/version.inc` defines the Enhanced Edition version (ED_VERSION, ED_DATE, ED_MAJOR/ED_MINOR). `tools/asm2patch.py` passes `-i patches/src/` to NASM, so any patch can `%include` it. The boot screen line, Setup's title line (FA40:3BA0), the summary's title box and Tools → System information show it, and E800:0008 holds major and minor. `tools/version.py` reads it for the build and the tests.
+- **Location.** `tools_rom` puts an 18 KB extension in the image's unused 08000–0FFFF, which the CPU sees at E8000. It starts with `NCRX`, a size word and a word checksum (the 16-bit sum of all its words is 0). The BIOS glue (F000:F860) verifies both before every far call into it.
 - **Entry points (far).**
   - E800:000A: Tools (AX=0 menu, 1 boot menu)
   - E800:000D: end-of-POST chime and summary

@@ -44,7 +44,10 @@ def build(out, names):
         print("applied", n)
     d = open(out, "rb").read()
     assert sum(d[0x10000:]) & 0xFF == 0 and sum(d[:0x8000]) & 0xFF == 0
-    print("wrote %s\nSHA-256 %s" % (os.path.abspath(out), hashlib.sha256(d).hexdigest()))
+    sys.path.insert(0, HERE)
+    from version import ED_DATE, ED_VERSION
+    print("wrote %s\nEnhanced Edition %s (%s)\nSHA-256 %s" % (os.path.abspath(out), ED_VERSION, ED_DATE,
+                                                            hashlib.sha256(d).hexdigest()))
 
 
 if __name__ == "__main__":

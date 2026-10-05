@@ -15,6 +15,7 @@ ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, HERE)
 from emu import ORIGINAL, Machine, StopEmu, cmos_checksum  # noqa: E402
+from version import ED_VERSION  # noqa: E402
 
 IMPROVED = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "build", "NCR3230-203-improved.BIN")
 if len(sys.argv) <= 1:
@@ -73,7 +74,7 @@ def setup(image, keys, flag=0x00):
 m = post(IMPROVED)
 L = m.screen_text().splitlines()
 check(L[0].startswith("╔") and L[0].endswith("╗") and L[3].startswith("╚"), "splash: double-line banner on rows 0-3")
-check("NCR System 3230" in L[1] and "Enhanced Edition" in L[1], "splash: title line")
+check("NCR System 3230" in L[1] and "Enhanced Edition %s" % ED_VERSION in L[1], "splash: title line with our version")
 tools = m.read(0xE8000, 4) == b"NCRX"
 if tools:
     check("Enhanced by StevenC & Claude" in L[2] and "F1 Setup  F8 Boot menu  F10 Tools" in L[2],
@@ -116,7 +117,8 @@ check(r is not None and mm.cell(r, c - 1)[0] == ord("_"), "monochrome: messages 
 # ---------------------------------------------------------------- Setup
 mo, mi = setup(ORIGINAL, []), setup(IMPROVED, [])
 LO, LI = mo.screen_text().splitlines(), mi.screen_text().splitlines()
-check("Enhanced by StevenC & Claude" in LI[0] and LI[0].startswith("   Setup, Version 2.01.00 (3230)"),
+check("Enhanced Edition %s by StevenC & Claude" % ED_VERSION in LI[0]
+      and LI[0].startswith("   Setup, Version 2.01.00 (3230)"),
       "Setup: credits on the title line")
 check(LO[1:] == LI[1:], "Setup: main screen otherwise unchanged")
 
