@@ -4,6 +4,13 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.3 (2026-10-05)
+
+- The chipset is identified: **UMC 82C480** (UM82C481BF, UM82C482AF, UM82C206F; SMC FDC37C661 for the I/O ports). Its registers are decoded from an AMI BIOS for another UMC 480 board; see [docs/chipset-umc480.md](docs/chipset-umc480.md).
+- New: Tools → 9 **Chipset settings**: ISA bus clock, I/O recovery time, DRAM read and write wait states, L2 cache read burst and write wait states. They are saved in CMOS 4Eh–51h and applied at the end of POST. NCR's values stay unless you change them.
+- Fail-safe: a boot with new settings that never reaches booting or Tools makes the next boot skip them (CMOS 52h). Shift held at the end of POST skips them once.
+- The register viewer moved under the settings page (R) and now names the bits. The summary shows the chipset timing state.
+
 ## 1.2 (2026-10-05)
 
 - New: Tools → 9 **Chipset registers**. A read-only view of the chipset's registers 80h–9Fh, in hex and binary, beside the value POST's table writes to each one. Registers that differ are yellow, and the known ones are labelled (L2 cache, shadow). Setup's option bytes, CMOS 44h–47h, are shown too, and R reads everything again. It is for identifying the chipset and finding what each Setup option changes: photograph it, change an option, reboot, and compare.

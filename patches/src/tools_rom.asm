@@ -344,6 +344,11 @@ V_BOOTQ     equ 0x174               ; 1 while the boot order runs: give up on a 
 V_ORDER     equ 0x178               ; 4 bytes: boot order devices (0 none, 1 A:, 2 C:, 3 CD, 4 ROM)
 V_OSEL      equ 0x17C
 V_OTMP      equ 0x180               ; 4 bytes: the order as read from CMOS
+V_CSTAT     equ 0x184               ; chipset settings this boot (see chip_apply)
+V_CS81      equ 0x185               ; chipset settings: 81h bits 2-0, 82h bits 1-0, 91h
+V_CS82      equ 0x186
+V_CS91      equ 0x187
+V_CSEL      equ 0x188
 V_IDBUF     equ 0x200               ; 512 bytes
 V_TLOOP     equ 0x400               ; timing loop copied to RAM
 
@@ -404,6 +409,7 @@ zero_word: dw 0
 
 tools_entry:                        ; AX = 0 menu, 1 boot menu
     ENTER
+    call cs_boot_ok
     call ui_init
     call gather_cpu
     cmp word [gs:V_ARG], 1
@@ -443,6 +449,7 @@ mhz_entry:                          ; returns AX = MHz (0 = failed)
 
 boot_entry:                         ; returns (CF=1) when there is no override
     ENTER
+    call cs_boot_ok                 ; the chipset settings got the machine this far
     call boot_override
     push es
     push 0
@@ -1648,7 +1655,7 @@ m5: db "5  CMOS contents", 0
 m6: db "6  Floppy drive test (NCR built-in)", 0
 m7: db "7  Hard disk setup", 0
 m8: db "8  Boot menu", 0
-m9: db "9  Chipset registers", 0
+m9: db "9  Chipset settings and registers", 0
 m10: db "0  Continue booting", 0
 t_menu: db "Tools", 0
 h_menu: db 0x18, 0x19, " Select   Enter Open   0-9 Shortcut   Esc Continue booting", 0
@@ -2242,6 +2249,455 @@ s_lost: db "power was lost", 0
 s_on: db "on", 0
 s_off: db "off", 0
 
+; ------------------------------------------------------------------ chipset settings
+; The UMC 82C480's timing options, decoded from an AMI BIOS for another
+; UMC 480 board (see docs/chipset-umc480.md). They are kept in CMOS 4Eh-52h
+; and written into the chipset at the end of POST; without saved settings
+; nothing is changed and NCR's own values (POST's table at F000:2225) stay.
+;   4Eh = 'C'   4Fh = ISA clock (81h bits 2-0) | I/O recovery (82h bits 1-0) << 4
+;   50h = register 91h (L2 cache and DRAM wait states)   51h = NOT sum 4Eh-50h
+;   52h = fail-safe: 'P' while a boot with the settings has not reached INT 19h
+;         or Tools, 'F' after such a boot failed (settings then stay off until
+;         they are saved again). Holding Shift at the end of POST skips them.
+
+CS_INDEX    equ 0x4E
+CS_SIG      equ 'C'
+CS_FLAG     equ 0x52
+
+; V_CSTAT: 0 NCR defaults, 1 applied, 2 skipped (last boot failed), 3 skipped (Shift)
+cs_read:                            ; saved settings -> V_CS81/82/91. CF=1 if none (V_* = NCR's)
+    push ax
+    push cx
+    mov al, 0x81
+    call chip_post
+    and al, 0x07
+    mov [gs:V_CS81], al
+    mov al, 0x82
+    call chip_post
+    and al, 0x03
+    mov [gs:V_CS82], al
+    mov al, 0x91
+    call chip_post
+    mov [gs:V_CS91], al
+    mov al, CS_INDEX
+    call cmos_read
+    cmp al, CS_SIG
+    jne .no
+    mov cl, al
+    mov al, CS_INDEX + 1
+    call cmos_read
+    add cl, al
+    mov ah, al
+    mov al, CS_INDEX + 2
+    call cmos_read
+    add cl, al
+    mov ch, al
+    mov al, CS_INDEX + 3
+    call cmos_read
+    not al
+    cmp al, cl
+    jne .no
+    mov al, ah
+    and al, 0x07
+    mov [gs:V_CS81], al
+    shr ah, 4
+    and ah, 0x03
+    mov [gs:V_CS82], ah
+    mov [gs:V_CS91], ch
+    clc
+    jmp short .x
+.no:
+    stc
+.x:
+    pop cx
+    pop ax
+    ret
+
+cs_write:                           ; V_CS81/82/91 -> CMOS, and the fail-safe flag cleared
+    push ax
+    push cx
+    mov al, CS_INDEX
+    mov ah, CS_SIG
+    call cmos_write
+    mov cl, CS_SIG
+    mov ah, [gs:V_CS82]
+    shl ah, 4
+    or ah, [gs:V_CS81]
+    add cl, ah
+    mov al, CS_INDEX + 1
+    call cmos_write
+    mov ah, [gs:V_CS91]
+    add cl, ah
+    mov al, CS_INDEX + 2
+    call cmos_write
+    mov ah, cl
+    not ah
+    mov al, CS_INDEX + 3
+    call cmos_write
+    call cs_flag_clear
+    pop cx
+    pop ax
+    ret
+
+cs_clear:                           ; back to NCR's values
+    push ax
+    mov al, CS_INDEX
+    xor ah, ah
+    call cmos_write
+    call cs_flag_clear
+    pop ax
+    ret
+
+cs_flag_clear:
+    push ax
+    mov al, CS_FLAG
+    xor ah, ah
+    call cmos_write
+    pop ax
+    ret
+
+cs_boot_ok:                         ; the boot got this far: settings are safe
+    push ax
+    mov al, CS_FLAG
+    call cmos_read
+    cmp al, 'P'
+    jne .x
+    call cs_flag_clear
+.x:
+    pop ax
+    ret
+
+chip_apply:                         ; end of POST: saved settings into the chipset
+    mov byte [gs:V_CSTAT], 0
+    call cs_read
+    jnc .have
+    call cs_flag_clear
+    ret
+.have:
+    push es
+    push 0x40
+    pop es
+    test byte [es:0x17], 0x03       ; a Shift key held: skip this time
+    pop es
+    jz .noshift
+    mov byte [gs:V_CSTAT], 3
+    ret
+.noshift:
+    mov al, CS_FLAG
+    call cmos_read
+    cmp al, 'F'
+    je .failed
+    cmp al, 'P'                     ; the last boot with them never got to INT 19h
+    jne .go
+    mov al, CS_FLAG
+    mov ah, 'F'
+    call cmos_write
+.failed:
+    mov byte [gs:V_CSTAT], 2
+    ret
+.go:
+    mov al, CS_FLAG
+    mov ah, 'P'
+    call cmos_write
+    mov al, 0x81
+    call chip_read
+    and al, 0xF8
+    or al, [gs:V_CS81]
+    mov ah, al
+    mov al, 0x81
+    call chip_write
+    mov al, 0x82
+    call chip_read
+    and al, 0xFC
+    or al, [gs:V_CS82]
+    mov ah, al
+    mov al, 0x82
+    call chip_write
+    mov ah, [gs:V_CS91]
+    mov al, 0x91
+    call chip_write
+    mov byte [gs:V_CSTAT], 1
+    ret
+
+chip_write:                         ; chipset register AL = AH
+    pushf
+    cli
+    out 0x22, al
+    mov al, ah
+    out 0x24, al
+    popf
+    ret
+
+cs_status:                          ; one line: what the chipset settings are doing
+    mov al, [gs:V_CSTAT]
+    cmp al, 1
+    jne .2
+    SAY 1, A_TITLE, "custom settings in use", 1, A_VALUE
+    ret
+.2:
+    cmp al, 2
+    jne .3
+    SAY 1, A_BAD, "skipped: a boot with them did not finish", 1, A_VALUE
+    ret
+.3:
+    cmp al, 3
+    jne .0
+    SAY 1, A_BAD, "skipped this boot (Shift held)", 1, A_VALUE
+    ret
+.0:
+    SAY "NCR defaults"
+    ret
+
+; Option table: label, variable, field mask, shift, allowed values, names by value
+CS_N        equ 6
+cs_opts:    dw cso_isa, cso_rec, cso_drd, cso_dwr, cso_l2b, cso_l2w
+
+cso_isa:    dw s_cs_isa
+            db 0, 0x07, 0, 0x81, 6, 0, 1, 2, 3, 4, 7
+            dw s_isa6, s_isa5, s_isa4, s_isa3, s_isa2, s_res, s_res, s_isa8
+cso_rec:    dw s_cs_rec
+            db 1, 0x03, 0, 0x82, 4, 0, 1, 2, 3
+            dw s_rec2, s_rec4, s_rec8, s_rec12
+cso_drd:    dw s_cs_drd
+            db 2, 0x0C, 2, 0x91, 4, 0, 1, 2, 3
+            dw s_ws3, s_ws2, s_ws1, s_ws0
+cso_dwr:    dw s_cs_dwr
+            db 2, 0x03, 0, 0x91, 3, 0, 2, 3
+            dw s_wr0, s_res, s_ws1, s_ws0
+cso_l2b:    dw s_cs_l2b
+            db 2, 0xC0, 6, 0x91, 3, 0, 1, 2
+            dw s_b3111, s_b3222, s_b2111, s_res
+cso_l2w:    dw s_cs_l2w
+            db 2, 0x30, 4, 0x91, 3, 0, 1, 2
+            dw s_ws1, s_ws2, s_l2w0, s_res
+
+s_cs_isa:   db "ISA bus clock", 0
+s_cs_rec:   db "I/O recovery time", 0
+s_cs_drd:   db "DRAM read wait states", 0
+s_cs_dwr:   db "DRAM write wait states", 0
+s_cs_l2b:   db "L2 cache read burst", 0
+s_cs_l2w:   db "L2 cache write wait states", 0
+s_isa6:     db 0xF6, " 6  (5.6 MHz)", 0
+s_isa5:     db 0xF6, " 5  (6.7 MHz)", 0
+s_isa4:     db 0xF6, " 4  (8.3 MHz)", 0
+s_isa3:     db 0xF6, " 3  (11.1 MHz)", 0
+s_isa2:     db 0xF6, " 2  (16.7 MHz)", 0
+s_isa8:     db 0xF6, " 8  (4.2 MHz)", 0
+s_res:      db "reserved", 0
+s_rec2:     db "2 bus clocks", 0
+s_rec4:     db "4 bus clocks", 0
+s_rec8:     db "8 bus clocks", 0
+s_rec12:    db "12 bus clocks", 0
+s_ws3:      db "3 WS", 0
+s_ws2:      db "2 WS", 0
+s_ws1:      db "1 WS", 0
+s_ws0:      db "0 WS", 0
+s_wr0:      db "3 WS (early chips: 2)", 0
+s_b3111:    db "3-1-1-1", 0
+s_b3222:    db "3-2-2-2", 0
+s_b2111:    db "2-1-1-1", 0
+s_l2w0:     db "0 WS (later chips)", 0
+
+cs_field:                           ; SI = option -> AL = its field in the variable
+    movzx bx, byte [cs:si + 2]      ; 0, 1, 2 = V_CS81, V_CS82, V_CS91
+    mov al, [gs:V_CS81 + bx]
+cs_extract:                         ; AL = byte, SI = option -> AL = field value
+    push cx
+    and al, [cs:si + 3]
+    mov cl, [cs:si + 4]
+    shr al, cl
+    pop cx
+    ret
+
+cs_name:                            ; AL = field value, SI = option: print its name
+    push si
+    movzx bx, al
+    shl bx, 1
+    movzx ax, byte [cs:si + 6]      ; allowed count
+    add si, 7
+    add si, ax                      ; past the allowed values: the name table
+    mov si, [cs:si + bx]
+    call puts
+    pop si
+    ret
+
+cs_step:                            ; SI = option, AH = +1/-1: next allowed value into the variable
+    push cx
+    push dx
+    call cs_field                   ; AL = current
+    movzx cx, byte [cs:si + 6]
+    xor bx, bx
+.f:
+    cmp [cs:si + 7 + bx], al
+    je .found
+    inc bx
+    cmp bx, cx
+    jb .f
+    xor bx, bx                      ; not an allowed value: start from the first
+    jmp short .set
+.found:
+    add bl, ah
+    jns .lo
+    mov bl, cl
+    dec bl
+.lo:
+    cmp bl, cl
+    jb .set
+    xor bl, bl
+.set:
+    mov dl, [cs:si + 7 + bx]        ; new value
+    mov cl, [cs:si + 4]
+    shl dl, cl
+    movzx bx, byte [cs:si + 2]
+    mov al, [gs:V_CS81 + bx]
+    mov dh, [cs:si + 3]
+    not dh
+    and al, dh
+    or al, dl
+    mov [gs:V_CS81 + bx], al
+    pop dx
+    pop cx
+    ret
+
+page_chipset:                       ; Tools 9: the settings; R shows the raw registers
+    call cs_read
+    mov byte [gs:V_CSEL], 0
+    mov si, s_none
+.draw:
+    push si
+    mov si, t_cset
+    mov bx, h_cset
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0503
+    call goto_rc
+    SAY "UMC 82C480 chipset timing.      Setting                  In the chip now"
+    xor cx, cx
+.row:
+    mov si, cx
+    shl si, 1
+    mov si, [cs:cs_opts + si]
+    mov dh, cl
+    add dh, 7
+    mov dl, 5
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    push si
+    mov si, [cs:si]
+    call puts
+    pop si
+    mov dl, 34
+    call goto_rc
+    mov byte [gs:V_ATTR], A_VALUE
+    cmp cl, [gs:V_CSEL]
+    jne .v
+    mov byte [gs:V_ATTR], A_SEL
+.v:
+    mov al, ' '
+    call putc
+    push cx
+    call cs_field
+    call cs_name
+    pop cx
+    mov al, ' '
+    call putc
+    mov dl, 59
+    call goto_rc
+    mov byte [gs:V_ATTR], A_DIM
+    mov al, [cs:si + 5]             ; the register, as it is now
+    call chip_read
+    call cs_extract
+    push cx
+    call cs_name
+    pop cx
+    inc cx
+    cmp cx, CS_N
+    jb .row
+    mov dx, 0x0E03
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "This boot: "
+    mov byte [gs:V_ATTR], A_VALUE
+    call cs_status
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1003
+    call goto_rc
+    SAY "Saved settings are applied at the end of every POST, so restart after S.", 3
+    SAY "Faster settings need fast enough RAM: test with Tools 4 (memory test). If a", 3
+    SAY "boot with them does not finish, the next boot skips them by itself, and", 3
+    SAY "holding Shift while POST ends skips them once. MHz are for a 33 MHz bus."
+    pop si
+    mov dx, 0x1503
+    call goto_rc
+    mov byte [gs:V_ATTR], A_OK
+    call puts
+.key:
+    call getkey
+    mov si, s_none
+    cmp ah, 0x01
+    je .x
+    cmp ah, 0x48
+    je .up
+    cmp ah, 0x50
+    je .down
+    cmp ah, 0x4B
+    je .left
+    cmp ah, 0x4D
+    je .right
+    cmp al, ' '
+    je .right
+    or al, 0x20
+    cmp al, 's'
+    je .save
+    cmp al, 'd'
+    je .def
+    cmp al, 'r'
+    je .regs
+    jmp short .key
+.up:
+    cmp byte [gs:V_CSEL], 0
+    je .key
+    dec byte [gs:V_CSEL]
+    jmp .draw
+.down:
+    cmp byte [gs:V_CSEL], CS_N - 1
+    jae .key
+    inc byte [gs:V_CSEL]
+    jmp .draw
+.left:
+    mov ah, -1
+    jmp short .step
+.right:
+    mov ah, 1
+.step:
+    movzx si, byte [gs:V_CSEL]
+    shl si, 1
+    mov si, [cs:cs_opts + si]
+    call cs_step
+    mov si, s_none
+    jmp .draw
+.save:
+    call cs_write
+    mov si, s_cssaved
+    jmp .draw
+.def:
+    call cs_clear
+    call cs_read
+    mov si, s_csdef
+    jmp .draw
+.regs:
+    call page_chipregs
+    mov si, s_none
+    jmp .draw
+.x:
+    clc
+    ret
+
+t_cset:     db "Chipset settings", 0
+h_cset:     db 0x18, 0x19, " Select  ", 0x1B, 0x1A, " Change  S Save  D NCR defaults  R Registers  Esc Back", 0
+s_cssaved:  db "Saved. Restart (Ctrl-Alt-Del) for POST to apply them.", 0
+s_csdef:    db "Saved: NCR's own values are used from the next boot.", 0
+
 ; ------------------------------------------------------------------ chipset registers
 ; Read-only view of the chipset's configuration registers 80h-9Fh (index port
 ; 22h, data port 24h) next to the value POST's table at F000:2225 writes, and
@@ -2251,7 +2707,7 @@ s_off: db "off", 0
 
 CHIP_TABLE  equ 0x2225              ; F000: count word, then (index, value) pairs
 
-page_chipset:
+page_chipregs:
 .draw:
     mov si, t_chip
     mov bx, h_chip
@@ -2411,32 +2867,44 @@ chip_post:                          ; AL = register -> AL = POST's table value, 
     ret
 
 chip_tag:                           ; AL = register: what is known about it
-    cmp al, 0x92
-    jne .1
-    SAY "  L2 on"
-    ret
-.1:
-    cmp al, 0x93
-    jne .2
-    SAY "  L2 size"
-    ret
-.2:
-    cmp al, 0x9B
-    jne .3
-    SAY "  shadow,WP"
-    ret
-.3:
-    cmp al, 0x9D
-    je .sh
-    cmp al, 0x9E
-    jne .x
-.sh:
-    SAY "  shadow"
+    push si
+    mov si, chip_tags
+.l:
+    cmp byte [cs:si], 0
+    je .x
+    cmp [cs:si], al
+    je .hit
+    inc si
+.skip:
+    cmp byte [cs:si], 0
+    je .n
+    inc si
+    jmp short .skip
+.n:
+    inc si
+    jmp short .l
+.hit:
+    inc si
+    call puts
 .x:
+    pop si
     ret
 
+chip_tags:                          ; register, "  name", 0 ... (see docs/chipset-umc480.md)
+    db 0x81, "  ISA clk,DMA", 0
+    db 0x82, "  KB clk,I/O", 0
+    db 0x91, "  DRAM,L2 WS", 0
+    db 0x92, "  L2,blocks", 0
+    db 0x93, "  L2 size", 0
+    db 0x97, "  page,CAS", 0
+    db 0x9B, "  F/E cache", 0
+    db 0x9C, "  C/D cache", 0
+    db 0x9D, "  shadow", 0
+    db 0x9E, "  shadow", 0
+    db 0
+
 t_chip: db "Chipset registers (index 22h, data 24h)", 0
-h_chip: db "R Read again   Esc Back   (read-only: nothing is changed)", 0
+h_chip: db "R Read again   Esc Back to the settings   (read-only: nothing is changed)", 0
 
 ; ------------------------------------------------------------------ hard disk setup
 ; Sets CMOS hard disk types the 1990s way: Automatic (the drive is asked at
@@ -3117,6 +3585,7 @@ h_boot: db "1-4 Choose   O Normal boot order   Esc Continue", 0
 
 capture_entry:                      ; far, end of POST
     ENTER
+    call chip_apply                 ; saved chipset settings
     call capture19
     LEAVE
     retf
@@ -5731,6 +6200,10 @@ page_summary:
     mov si, l_order
     call label
     call order_line
+    mov dh, 19
+    mov si, l_ctime
+    call label
+    call cs_status
     ; footer and a 3 second wait (any key ends it; the key is left for POST)
     mov byte [gs:V_ATTR], A_BAR
     mov dx, 0x1800
@@ -5804,6 +6277,7 @@ page_summary:
     ret
 l_mem: db "Memory", 0
 l_order: db "Boot order", 0
+l_ctime: db "Chipset timing", 0
 l_cache: db "Level 1 cache", 0
 
 align 2, db 0                       ; the checksum covers whole words

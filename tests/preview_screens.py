@@ -120,7 +120,8 @@ def main():
         ("Tools: Hard disk setup", tools_screen([th.key("7")], big_disk=True)),
         ("Boot menu (F8) with an option ROM such as the PicoMEM", tools_screen([], page=1, rom_hook=True)),
         ("Boot order editor (F8, then O)", tools_screen([th.key("o")], page=1, rom_hook=True)),
-        ("Tools: Chipset registers", tools_screen([th.key("9")])),
+        ("Tools: Chipset settings", tools_screen([th.key("9")])),
+        ("Tools: Chipset registers (from the settings, R)", tools_screen([th.key("9"), th.key("r")])),
     ]
     html = ['<!doctype html><meta charset="utf-8"><title>NCR 3230 BIOS preview</title>',
             '<style>body{background:#222;color:#ddd;font:14px system-ui;margin:16px}'

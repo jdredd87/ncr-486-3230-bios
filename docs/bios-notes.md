@@ -20,7 +20,7 @@ Inside the F000 segment:
 
 ## Chipset
 
-- **Configuration ports.** The chipset is configured through **index port 22h, data port 24h**, using registers 80h–9Fh. It is not yet identified. It is not OPTi's 82C493, which uses the same ports with registers 20h–2Bh.
+- **Configuration ports.** The chipset is the **UMC 82C480** (UM82C481 memory controller, UM82C482 system controller, UM82C206 peripherals), configured through **index port 22h, data port 24h**, using registers 80h–9Fh. The register map, decoded from an AMI BIOS for another UMC 480 board, is in [chipset-umc480.md](chipset-umc480.md).
 - **Init table.** POST programs 16 registers (81h–9Fh) from a table at F000:2225: a count word followed by (index, data) pairs: 81=31, 82=54, 91=0A, 92=00, 93=FE, 94–96=00, 97=B0, 98–99=00, 9B=09, 9D=00, 9C=00, 9E=00, 9F=00. Later POST code changes 92h/93h (L2 cache), 97h bit 6, 9Bh/9Dh/9Eh (shadowing), 95h and 9Ch. Tools → 9 shows the live values beside these.
 - **No clock control.** The CPU clock comes from the oscillator. There is no turbo or speed-select code, and the DX2's doubling is internal to the chip. Setup's "AT-Bus Speed" (Fast/Standard) is stored in CMOS 47h bit 0, but no code found in POST or Setup reads that bit.
 - **Known registers:**
