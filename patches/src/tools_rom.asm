@@ -1604,6 +1604,10 @@ page_menu:
     je .down
     cmp al, 0x0D
     je .open
+    cmp al, '0'                     ; 0: the last item (continue booting)
+    jne .digit
+    mov al, '0' + MENU_N
+.digit:
     cmp al, '1'
     jb .key
     cmp al, '0' + MENU_N
@@ -1632,10 +1636,10 @@ page_menu:
 .exit:
     ret
 
-MENU_N equ 9
-menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8, m9
+MENU_N equ 10
+menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8, m9, m10
 menu_pages: dw page_sysinfo, page_drives, page_memmap, page_memtest, page_cmos, page_fdtest, page_hdsetup
-            dw page_boot_menu
+            dw page_boot_menu, page_chipset
 m1: db "1  System information", 0
 m2: db "2  Drives and devices", 0
 m3: db "3  Memory map and option ROMs", 0
@@ -1644,9 +1648,10 @@ m5: db "5  CMOS contents", 0
 m6: db "6  Floppy drive test (NCR built-in)", 0
 m7: db "7  Hard disk setup", 0
 m8: db "8  Boot menu", 0
-m9: db "9  Continue booting", 0
+m9: db "9  Chipset registers", 0
+m10: db "0  Continue booting", 0
 t_menu: db "Tools", 0
-h_menu: db 0x18, 0x19, " Select   Enter Open   1-9 Shortcut   Esc Continue booting", 0
+h_menu: db 0x18, 0x19, " Select   Enter Open   0-9 Shortcut   Esc Continue booting", 0
 h_back: db "Any key returns to the menu", 0
 
 page_sysinfo:
@@ -2236,6 +2241,202 @@ s_ok: db "OK", 0
 s_lost: db "power was lost", 0
 s_on: db "on", 0
 s_off: db "off", 0
+
+; ------------------------------------------------------------------ chipset registers
+; Read-only view of the chipset's configuration registers 80h-9Fh (index port
+; 22h, data port 24h) next to the value POST's table at F000:2225 writes, and
+; Setup's option bytes in CMOS 44h-47h. The chipset is not identified yet;
+; comparing this page before and after changing a Setup option shows which
+; bits that option controls.
+
+CHIP_TABLE  equ 0x2225              ; F000: count word, then (index, value) pairs
+
+page_chipset:
+.draw:
+    mov si, t_chip
+    mov bx, h_chip
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0403
+    call goto_rc
+    SAY "Reg  Now  Binary     POST"
+    mov dx, 0x042A
+    call goto_rc
+    SAY "Reg  Now  Binary     POST"
+    xor bx, bx
+.reg:
+    mov dh, bl
+    and dh, 0x0F
+    add dh, 5
+    mov dl, 3
+    test bl, 0x10
+    jz .col
+    mov dl, 42
+.col:
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    mov al, bl
+    add al, 0x80
+    call hex2
+    SAY "h  "
+    mov al, bl
+    add al, 0x80
+    call chip_read
+    mov ah, al                      ; AH = value now
+    mov al, bl
+    add al, 0x80
+    call chip_post                  ; AL = POST's value, CF=1 if not in the table
+    pushf
+    mov byte [gs:V_ATTR], A_VALUE
+    jc .same
+    cmp al, ah
+    je .same
+    mov byte [gs:V_ATTR], A_TITLE   ; changed since POST's table
+.same:
+    xchg al, ah
+    call hex2
+    SAY "h  "
+    call bin8
+    SAY "  "
+    mov byte [gs:V_ATTR], A_DIM
+    popf
+    jc .none
+    mov al, ah
+    call hex2
+    SAY "h"
+    jmp short .tag
+.none:
+    SAY " - "
+.tag:
+    mov al, bl
+    add al, 0x80
+    call chip_tag
+    inc bx
+    cmp bx, 0x20
+    jb .reg
+    mov dx, 0x1603
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "CMOS"
+    mov byte [gs:V_ATTR], A_VALUE
+    mov cl, 0x44
+.cm:
+    SAY "  "
+    mov al, cl
+    call hex2
+    SAY "h="
+    mov al, cl
+    call cmos_read
+    push ax
+    call hex2
+    mov al, ' '
+    call putc
+    pop ax
+    call bin8
+    inc cl
+    cmp cl, 0x48
+    jb .cm
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x1503
+    call goto_rc
+    SAY "Yellow: differs from POST's table (F000:2225); cache and shadow change later."
+.key:
+    call getkey
+    cmp ah, 0x01
+    je .x
+    or al, 0x20
+    cmp al, 'r'
+    je .draw
+    jmp short .key
+.x:
+    clc
+    ret
+
+hex2:                               ; AL as two hex digits
+    push eax
+    push cx
+    movzx eax, al
+    mov cl, 2
+    call puthex
+    pop cx
+    pop eax
+    ret
+
+bin8:                               ; AL as "0011 0001"
+    push ax
+    push cx
+    mov ah, al
+    mov cx, 8
+.b:
+    mov al, '0'
+    shl ah, 1
+    adc al, 0
+    call putc
+    cmp cx, 5
+    jne .n
+    mov al, ' '
+    call putc
+.n:
+    loop .b
+    pop cx
+    pop ax
+    ret
+
+chip_post:                          ; AL = register -> AL = POST's table value, CF=1 if none
+    push cx
+    push si
+    push es
+    push 0xF000
+    pop es
+    mov si, CHIP_TABLE
+    mov cx, [es:si]
+    add si, 2
+.l:
+    jcxz .no
+    cmp [es:si], al
+    je .yes
+    add si, 2
+    dec cx
+    jmp short .l
+.yes:
+    mov al, [es:si + 1]
+    clc
+    jmp short .x
+.no:
+    stc
+.x:
+    pop es
+    pop si
+    pop cx
+    ret
+
+chip_tag:                           ; AL = register: what is known about it
+    cmp al, 0x92
+    jne .1
+    SAY "  L2 on"
+    ret
+.1:
+    cmp al, 0x93
+    jne .2
+    SAY "  L2 size"
+    ret
+.2:
+    cmp al, 0x9B
+    jne .3
+    SAY "  shadow,WP"
+    ret
+.3:
+    cmp al, 0x9D
+    je .sh
+    cmp al, 0x9E
+    jne .x
+.sh:
+    SAY "  shadow"
+.x:
+    ret
+
+t_chip: db "Chipset registers (index 22h, data 24h)", 0
+h_chip: db "R Read again   Esc Back   (read-only: nothing is changed)", 0
 
 ; ------------------------------------------------------------------ hard disk setup
 ; Sets CMOS hard disk types the 1990s way: Automatic (the drive is asked at

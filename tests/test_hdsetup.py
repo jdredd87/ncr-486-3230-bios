@@ -77,7 +77,7 @@ page(m, [])
 check("No CMOS battery" in m.screen_text(), "page: warns when the CMOS battery is flat")
 m = setup(disk())
 run_tools(m, [])
-check("7  Hard disk setup" in m.screen_text() and "9  Continue booting" in m.screen_text(), "menu: item 7, 9 items")
+check("7  Hard disk setup" in m.screen_text() and "0  Continue booting" in m.screen_text(), "menu: item 7 (0 continues booting)")
 
 # ---------------------------------------------------------------- Automatic
 m = setup(disk())

@@ -4,6 +4,11 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.2 (2026-10-05)
+
+- New: Tools → 9 **Chipset registers**. A read-only view of the chipset's registers 80h–9Fh, in hex and binary, beside the value POST's table writes to each one. Registers that differ are yellow, and the known ones are labelled (L2 cache, shadow). Setup's option bytes, CMOS 44h–47h, are shown too, and R reads everything again. It is for identifying the chipset and finding what each Setup option changes: photograph it, change an option, reboot, and compare.
+- The Tools menu's "Continue booting" moved to key 0. Esc still works the same. Items 1–8 are unchanged.
+
 ## 1.1 (2026-10-05)
 
 - Fix: "INTERRUPT CONTROLLERS" in the POST test list showed in red, as if it were an error. The colouring matched "rr" anywhere. It now looks for "rro" ("Error", "ERROR") or "ilu"/"ILU" ("failure"), so test names such as INTERRUPT stay grey. The two "** … not Correct" messages now show as yellow warnings, like the other "**" messages.

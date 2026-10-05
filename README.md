@@ -3,7 +3,7 @@
 Reverse-engineering, fixes and new features for the system BIOS of the **NCR System 3230** (486, BIOS 517-0000672 v2.03.00, chip U19, dated 10/08/93).
 
 - **`NCR-BIOS-517-0000672-VER2.03.00-U19.BIN`** is the original ROM dump. It is never modified.
-- **`build/NCR3230-203-improved.BIN`** is the improved ROM, **Enhanced Edition 1.1**, ready to program into a chip. See [CHANGELOG.md](CHANGELOG.md) for what each version contains.
+- **`build/NCR3230-203-improved.BIN`** is the improved ROM, **Enhanced Edition 1.2**, ready to program into a chip. See [CHANGELOG.md](CHANGELOG.md) for what each version contains.
 - **`userhdd/dos/userhdd.exe`** replaces NCR's lost USERHDD.EXE. It is needed only with the original ROM.
 
 ## What the improved ROM does
@@ -15,7 +15,7 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 - An end-of-POST **system summary**: processor and measured clock, memory, caches, drives, ports and video. It shows for 8 s with a countdown; Space holds it.
 - **F8 boot menu**: boot once from A:, C:, the **CD-ROM**, or an option ROM such as the PicoMEM.
 - **Saved boot order**, as on later BIOSes: up to four devices (A:, C:, CD-ROM, option ROM), tried in order at every boot. Missing or unbootable devices are skipped.
-- **F10 Tools**: system information, drives, memory map, memory test, CMOS viewer, NCR's floppy drive test, **Hard disk setup** and the boot menu.
+- **F10 Tools**: system information, drives, memory map, memory test, CMOS viewer, NCR's floppy drive test, **Hard disk setup**, the boot menu, and a **chipset register** viewer.
 
 **Hard disks**
 - **Automatic** by default: IDE disks are detected at every boot, even with no battery.
@@ -41,7 +41,7 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 | `fancy_boot` | The blue boot screen, coloured messages and credits. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). With it off, POST looks exactly as before. |
 | `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, saved boot order, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
 
-Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 305 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 311 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
 
 **Is the Tools area reachable on your board?** The boot screen shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off and everything else works.
 
@@ -55,6 +55,12 @@ Each patch is NASM source in `patches/src/` that checks the original bytes it re
 | F8 | Boot menu |
 | F10 | Tools |
 | Space | Holds the system summary on screen; the next key boots, or F1/F8/F10 act as above |
+
+### Chipset registers (Tools → 9)
+
+A read-only view of the chipset's configuration registers 80h–9Fh, each in hex and binary. Beside each one is the value POST's table writes to it. Registers that now differ from that value are yellow, and the known ones are labelled (L2 cache, shadow). Setup's option bytes, CMOS 44h–47h, are on the bottom line, and R reads everything again.
+
+The chipset isn't identified yet. To find out what a Setup option does, photograph this page, change the option in Setup, reboot, and photograph it again. The bits that changed are the ones that option controls.
 
 ### Boot menu (F8)
 
@@ -152,13 +158,13 @@ The ROM area E8000–EFFFF holds code that runs after boot: large-disk mode and 
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `4a204fbbe627b5e3e153e776e9c6d12800ffbb21114ecb0e7be696011e928286`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `833006c8b31b465c52b4a9956d0d310ad8ce71eefdc8517c1f769511c10057fc`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
 ### Which version is in the chip?
 
-The version shows on the boot screen ("Enhanced Edition 1.1"), in the end-of-POST summary, on Setup's title line, and in Tools → System information, with its release date. To make a new version, change `patches/src/version.inc`, add an entry to [CHANGELOG.md](CHANGELOG.md), rebuild, and tag the commit (`git tag v1.1`). The build prints the version with the SHA-256. The NCR BIOS's own version (2.03.00) and date (10/08/93) stay as they are, because DOS-era software reads them.
+The version shows on the boot screen ("Enhanced Edition 1.2"), in the end-of-POST summary, on Setup's title line, and in Tools → System information, with its release date. To make a new version, change `patches/src/version.inc`, add an entry to [CHANGELOG.md](CHANGELOG.md), rebuild, and tag the commit (`git tag v1.1`). The build prints the version with the SHA-256. The NCR BIOS's own version (2.03.00) and date (10/08/93) stay as they are, because DOS-era software reads them.
 
 ## USERHDD.EXE
 

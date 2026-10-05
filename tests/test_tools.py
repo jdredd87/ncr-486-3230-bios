@@ -50,7 +50,7 @@ run_tools(m, [])
 t = text(m)
 check("NCR System 3230 · Tools" in t and "Enhanced by StevenC & Claude" in t, "menu: title bar with credits")
 check(all(s in t for s in ("1  System information", "4  Memory test", "6  Floppy drive test", "7  Hard disk setup",
-                         "9  Continue booting")),
+                         "9  Chipset registers", "0  Continue booting")),
       "menu: all items listed")
 check(m.cell(6, 21)[1] == 0x3F, "menu: first item highlighted")
 m = machine()
@@ -329,6 +329,30 @@ check(m.vector(0x19) == (0xF000, 0xE6F2) and m.mem_byte(0xFEF0A) == 0 and boot19
       "no option ROM hook: INT 19h as before")
 run_tools(m, [], page=1)
 check("no option ROM hooked the boot" in text(m), "boot menu: says when there is no option ROM boot")
+
+# ---------------------------------------------------------------- chipset registers
+m = machine(flag=0xA5)
+for i, v in ((0x81, 0x31), (0x82, 0x54), (0x97, 0xF0)):
+    m.chipset[i] = v
+run_tools(m, [key("9")])
+t = text(m)
+lines = t.splitlines()
+check("Chipset registers (index 22h, data 24h)" in t and "81h  31h  0011 0001  31h" in t
+      and "92h  21h  0010 0001  00h  L2 on" in t and "93h  F8h  1111 1000  FEh  L2 size" in t,
+      "chipset page: registers now, in binary, next to POST's table value")
+r = next(i for i, line in enumerate(lines) if "97h  F0h" in line)
+c = lines[r].index("97h  F0h") + 5
+check(m.cell(r, c)[1] == 0x1E and m.cell(next(i for i, line in enumerate(lines) if "81h  31h" in line), 8)[1] == 0x1F,
+      "chipset page: a register that differs from POST's table is yellow")
+check("80h  00h  0000 0000   -" in t, "chipset page: registers POST's table does not set show '-'")
+check("44h=E5 1110 0101" in t and "47h=4E 0100 1110" in t, "chipset page: Setup's option bytes CMOS 44h-47h")
+reads = []
+orig_in = m.port_in
+m.port_in = lambda port, size: (reads.append((port, m.chip_index)) if port == 0x24 else None, orig_in(port, size))[1]
+run_tools(m, [key("9"), key("r")])
+check(sum(1 for p, i in reads if 0x80 <= i <= 0x9F) >= 64, "chipset page: R reads all 32 registers again")
+m = machine(flag=0xA5)
+check(run_tools(m, [key("0")]) == "returned", "menu: 0 continues booting")
 
 # ---------------------------------------------------------------- our version (version.inc)
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
