@@ -41,9 +41,11 @@ X_HDINIT    equ 0x0016
 X_CAPTURE   equ 0x0019
 ROM19       equ 0xEF06              ; F000 shadow: an option ROM's INT 19h (dword) ...
 ROM19_OK    equ 0xEF0A              ; ... and 1 if it is valid
-BOOT_STATE  equ 0x04F3              ; 0000:04F3 during INT 19h: 0 undecided, 'B' BIOS first,
-                                    ; 'R' option ROM chosen, 'P' option ROM had its turn
-ORDER_INDEX equ 0x4A                ; CMOS 4Ah: 'B' = BIOS boot first, else option ROM first
+BOOT_STATE  equ 0x04F3              ; 0000:04F3 during INT 19h: 0 undecided, 'E' boot order
+                                    ; done, 'R' option ROM chosen, 'P' option ROM had its turn
+ORDER_INDEX equ 0x4A                ; CMOS 4Ah-4Dh: saved boot order ('O', 4 device nibbles, check)
+ORDER_SIG   equ 'O'
+BOOT_NEXT   equ 0x04F4              ; 0000:04F4 during INT 19h: next boot order position
 FLAG_INDEX  equ 0xC8                ; CMOS 48h: fancy boot screen (A5h = off)
 SUMMARY_TICKS equ 146               ; end-of-POST summary: 8 s
 BEEP        equ 0x4F7D
@@ -334,6 +336,9 @@ V_UCYL      equ 0x124               ; user type (type 1): word
 V_UHD       equ 0x126
 V_USPT      equ 0x127
 V_IDGEO     equ 0x128               ; 2 x (cylinders, heads, sectors) words from IDENTIFY
+V_BOOTQ     equ 0x174               ; 1 while the boot order runs: give up on a CD quickly
+V_ORDER     equ 0x178               ; 4 bytes: boot order devices (0 none, 1 A:, 2 C:, 3 CD, 4 ROM)
+V_OSEL      equ 0x17C
 V_IDBUF     equ 0x200               ; 512 bytes
 V_TLOOP     equ 0x400               ; timing loop copied to RAM
 
@@ -434,7 +439,14 @@ mhz_entry:                          ; returns AX = MHz (0 = failed)
 boot_entry:                         ; returns (CF=1) when there is no override
     ENTER
     call boot_override
-    call boot_order
+    push es
+    push 0
+    pop es
+    cmp byte [es:BOOT_STATE], 'R'
+    pop es
+    je .out
+    call boot_by_order
+.out:
     LEAVE
     stc
     retf
@@ -2824,15 +2836,7 @@ page_boot:                          ; CF=1 if a device was chosen
     SAY "Normal boot order (O changes it, saved in CMOS):", 3
     mov byte [gs:V_ATTR], A_VALUE
     SAY "  "
-    mov al, ORDER_INDEX
-    call cmos_read
-    cmp al, 'B'
-    je .bfirst
-    SAY "an option ROM's own boot first (e.g. PicoMEM), then A:, C:"
-    jmp short .notes
-.bfirst:
-    SAY "BIOS first: A:, C:  (option ROM boot only with 4)"
-.notes:
+    call order_line
     mov byte [gs:V_ATTR], A_DIM
     mov dx, 0x1503
     call goto_rc
@@ -2853,15 +2857,7 @@ page_boot:                          ; CF=1 if a device was chosen
     or al, 0x20
     cmp al, 'o'
     jne .k
-    mov al, ORDER_INDEX
-    call cmos_read
-    xor ah, ah
-    cmp al, 'B'
-    je .flip
-    mov ah, 'B'
-.flip:
-    mov al, ORDER_INDEX
-    call cmos_write
+    call page_order
     jmp .draw
 .rom:
     call rom_boot
@@ -2921,7 +2917,7 @@ capture_entry:                      ; far, end of POST
 capture19:
     push 0
     pop es
-    mov byte [es:BOOT_STATE], 0
+    mov word [es:BOOT_STATE], 0     ; and BOOT_NEXT
     push 0xF000
     pop fs
     mov eax, [es:0x19 * 4]
@@ -2954,23 +2950,9 @@ capture19:
     call shadow_lock
     ret
 
-boot_order:                         ; nothing decided and CMOS 4Ah = 'B': BIOS boot first
-    push ds
-    push 0
-    pop ds
-    cmp byte [BOOT_STATE], 0
-    jne .x
-    mov al, ORDER_INDEX
-    call cmos_read
-    cmp al, 'B'
-    jne .x
-    mov byte [BOOT_STATE], 'B'
-.x:
-    pop ds
-    ret
-
 ; INT 19h: if the boot menu left a choice, try that device once.
 boot_override:
+    mov byte [gs:V_BOOTQ], 0
     push ds
     push 0
     pop ds
@@ -2979,15 +2961,25 @@ boot_override:
     mov dl, [0x4F2]
     mov word [0x4F0], 0
     cmp dl, ROM_CHOICE
-    jne .cd
+    jne .dev
     mov byte [BOOT_STATE], 'R'      ; the option ROM's boot: g_boot calls it
-    jmp short .no
-.cd:
+.no:
+    pop ds
+    ret
+.dev:
+    pop ds
     cmp dl, CD_DRIVE
     jne .disk
-    pop ds
     jmp cd_boot                     ; returns only if the CD did not boot
 .disk:
+    call boot_drive                 ; returns only if it did not boot
+    mov si, s_bootfail
+    jmp tty
+
+boot_drive:                         ; DL = 00h or 80h: boot from it, or return
+    push ds
+    push 0
+    pop ds
     mov si, 3
 .try:
     xor ax, ax
@@ -3009,27 +3001,369 @@ boot_override:
     cmp word [0x7DFE], 0xAA55
     jne .fail
 .go:
-    add sp, 2                       ; boot sectors expect DS = ES = 0
-    xor ax, ax
+    xor ax, ax                      ; boot sectors expect DS = ES = 0
     mov ds, ax
     mov es, ax
     jmp 0x0000:0x7C00               ; DL = boot drive
 .fail:
-    push cs
-    pop ds
-    mov si, s_bootfail
-.p:
-    lodsb
-    or al, al
-    jz .no
-    mov ah, 0x0E
-    mov bx, 7
-    int 0x10
-    jmp short .p
-.no:
     pop ds
     ret
+
 s_bootfail: db 13, 10, "Boot menu: that drive did not boot, using the normal order.", 13, 10, 0
+
+; ------------------------------------------------------------------ saved boot order
+; CMOS 4Ah = 'O', 4Bh/4Ch = four device nibbles (first in the high nibble of
+; 4Bh), 4Dh = NOT of the 8-bit sum of 4Ah-4Ch. Devices: 0 none, 1 floppy A:,
+; 2 hard disk C:, 3 CD-ROM, 4 the option ROM's own boot. Without a valid
+; order the BIOS default applies: an option ROM's boot first, then A:/C: as
+; Setup sets them. Missing or unbootable devices are skipped; when all fail,
+; the stock boot (with its "insert system disk" prompt) takes over.
+
+order_read:                         ; -> GS:V_ORDER. CF=1 if no valid order is saved
+    push ax
+    push bx
+    push cx
+    mov al, ORDER_INDEX
+    call cmos_read
+    cmp al, ORDER_SIG
+    jne .no
+    mov cl, al
+    mov al, ORDER_INDEX + 1
+    call cmos_read
+    add cl, al
+    mov ah, al
+    shr al, 4
+    mov [gs:V_ORDER], al
+    and ah, 0x0F
+    mov [gs:V_ORDER + 1], ah
+    mov al, ORDER_INDEX + 2
+    call cmos_read
+    add cl, al
+    mov ah, al
+    shr al, 4
+    mov [gs:V_ORDER + 2], al
+    and ah, 0x0F
+    mov [gs:V_ORDER + 3], ah
+    mov al, ORDER_INDEX + 3
+    call cmos_read
+    not al
+    cmp al, cl
+    jne .no
+    xor bx, bx
+.v:
+    cmp byte [gs:V_ORDER + bx], 4
+    ja .no
+    inc bx
+    cmp bx, 4
+    jb .v
+    clc
+    jmp short .x
+.no:
+    stc
+.x:
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+order_write:                        ; GS:V_ORDER -> CMOS 4Ah-4Dh
+    push ax
+    push cx
+    mov al, ORDER_INDEX
+    mov ah, ORDER_SIG
+    call cmos_write
+    mov cl, ORDER_SIG
+    mov ah, [gs:V_ORDER]
+    shl ah, 4
+    or ah, [gs:V_ORDER + 1]
+    add cl, ah
+    mov al, ORDER_INDEX + 1
+    call cmos_write
+    mov ah, [gs:V_ORDER + 2]
+    shl ah, 4
+    or ah, [gs:V_ORDER + 3]
+    add cl, ah
+    mov al, ORDER_INDEX + 2
+    call cmos_write
+    mov ah, cl
+    not ah
+    mov al, ORDER_INDEX + 3
+    call cmos_write
+    pop cx
+    pop ax
+    ret
+
+order_clear:                        ; back to the BIOS default
+    push ax
+    mov al, ORDER_INDEX
+    xor ah, ah
+    call cmos_write
+    pop ax
+    ret
+
+; INT 19h: boot in the saved order, from the position reached so far (an
+; option ROM that falls back calls INT 19h again and the order continues).
+boot_by_order:
+    call order_read
+    jc .x
+.next:
+    push 0
+    pop es
+    movzx bx, byte [es:BOOT_NEXT]
+    cmp bx, 4
+    jae .done
+    inc byte [es:BOOT_NEXT]
+    mov al, [gs:V_ORDER + bx]
+    cmp al, 1
+    je .fd
+    cmp al, 2
+    je .hd
+    cmp al, 3
+    je .cd
+    cmp al, 4
+    jne .next
+    call rom_boot                   ; the option ROM's boot: g_boot calls it
+    jc .next
+    push 0
+    pop es
+    mov byte [es:BOOT_STATE], 'R'
+    ret
+.fd:
+    mov si, s_ofd
+    call tty
+    xor dl, dl
+    call boot_drive
+    mov si, s_onodisk
+    call tty
+    jmp .next
+.hd:
+    mov si, s_ohd
+    call tty
+    mov dl, 0x80
+    call boot_drive
+    mov si, s_onoboot
+    call tty
+    jmp .next
+.cd:
+    mov byte [gs:V_BOOTQ], 1
+    call cd_boot
+    mov byte [gs:V_BOOTQ], 0
+    jmp .next
+.done:
+    mov byte [es:BOOT_STATE], 'E'   ; nothing booted: the stock boot follows
+.x:
+    ret
+
+s_ofd:      db 13, 10, "Boot order: floppy A: ", 0
+s_ohd:      db 13, 10, "Boot order: hard disk C: ", 0
+s_onodisk:  db "no boot disk", 0
+s_onoboot:  db "not bootable", 0
+
+dev_name:                           ; AL = boot order device: print its name
+    cmp al, 1
+    jne .2
+    SAY "Floppy A:"
+    ret
+.2:
+    cmp al, 2
+    jne .3
+    SAY "Hard disk C:"
+    ret
+.3:
+    cmp al, 3
+    jne .4
+    SAY "CD-ROM"
+    ret
+.4:
+    cmp al, 4
+    jne .0
+    SAY "Option ROM boot"
+    ret
+.0:
+    mov al, [gs:V_ATTR]
+    push ax
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "-"
+    pop ax
+    mov [gs:V_ATTR], al
+    ret
+
+order_line:                         ; the boot order in one line
+    call order_read
+    jnc .list
+    SAY "BIOS default (option ROM boot first, then A:, C:)"
+    ret
+.list:
+    xor bx, bx
+    xor cx, cx                      ; devices printed
+.l:
+    mov al, [gs:V_ORDER + bx]
+    test al, al
+    jz .n
+    jcxz .first
+    push ax
+    SAY ", "
+    pop ax
+.first:
+    call dev_name
+    inc cx
+.n:
+    inc bx
+    cmp bx, 4
+    jb .l
+    jcxz .none
+    ret
+.none:
+    SAY "nothing (the stock boot only)"
+    ret
+
+page_order:                         ; edit the saved boot order
+    call order_read
+    jnc .have
+    mov dword [gs:V_ORDER], 0x04030201  ; A:, C:, CD-ROM, option ROM
+.have:
+    mov byte [gs:V_OSEL], 0
+    mov si, s_none
+.draw:
+    push si
+    mov si, t_order
+    mov bx, h_order
+    call frame
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Tried in this order at every boot. Missing or unbootable devices are skipped."
+    xor bx, bx
+.row:
+    mov dh, bl
+    add dh, 7
+    mov dl, 5
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    mov al, '1'
+    add al, bl
+    call putc
+    SAY ".   "
+    call .attr
+    mov al, ' '
+    call putc
+    mov al, [gs:V_ORDER + bx]
+    push bx
+    call dev_name
+    pop bx
+    call .attr
+.pad:
+    cmp byte [gs:V_COL], 30
+    jae .padded
+    mov al, ' '
+    call putc
+    jmp short .pad
+.padded:
+    inc bx
+    cmp bx, 4
+    jb .row
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0D03
+    call goto_rc
+    SAY "Option ROM boot is the own boot of a card such as the PicoMEM. When it hands", 3
+    SAY "back to the BIOS, the next device in the order is tried. The CD-ROM is", 3
+    SAY "skipped after about 2 s when there is no disc. F8 at the end of POST still", 3
+    SAY "boots any device once."
+    mov dx, 0x1303
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "Saved now:   "
+    mov byte [gs:V_ATTR], A_VALUE
+    call order_line
+    pop si
+    mov dx, 0x1603
+    call goto_rc
+    mov byte [gs:V_ATTR], A_OK
+    call puts
+.key:
+    call getkey
+    mov si, s_none
+    cmp ah, 0x01
+    je .x
+    cmp ah, 0x48
+    je .up
+    cmp ah, 0x50
+    je .down
+    cmp ah, 0x4B
+    je .left
+    cmp ah, 0x4D
+    je .right
+    cmp al, ' '
+    je .right
+    cmp al, 0x0D
+    je .right
+    or al, 0x20
+    cmp al, 's'
+    je .save
+    cmp al, 'd'
+    je .def
+    jmp short .key
+.up:
+    cmp byte [gs:V_OSEL], 0
+    je .draw
+    dec byte [gs:V_OSEL]
+    jmp .draw
+.down:
+    cmp byte [gs:V_OSEL], 3
+    jae .draw
+    inc byte [gs:V_OSEL]
+    jmp .draw
+.left:
+    mov ah, 4                       ; previous device: +4 mod 5
+    jmp short .change
+.right:
+    mov ah, 1
+.change:
+    movzx bx, byte [gs:V_OSEL]
+    mov cl, [gs:V_ORDER + bx]       ; old device
+    mov al, cl
+    add al, ah
+    cmp al, 5
+    jb .c1
+    sub al, 5
+.c1:
+    test al, al                     ; a device already in another place swaps with it
+    jz .set
+    xor di, di
+.dup:
+    cmp [gs:V_ORDER + di], al
+    jne .dn
+    mov [gs:V_ORDER + di], cl
+.dn:
+    inc di
+    cmp di, 4
+    jb .dup
+.set:
+    mov [gs:V_ORDER + bx], al
+    jmp .draw
+.save:
+    call order_write
+    mov si, s_osaved
+    jmp .draw
+.def:
+    call order_clear
+    mov si, s_odef
+    jmp .draw
+.x:
+    ret
+.attr:                              ; the selected place is highlighted
+    mov byte [gs:V_ATTR], A_VALUE
+    cmp bl, [gs:V_OSEL]
+    jne .ax
+    mov byte [gs:V_ATTR], A_SEL
+.ax:
+    ret
+
+t_order:  db "Boot order", 0
+h_order:  db 0x18, 0x19, " Place   ", 0x1B, 0x1A, "/Space Device   S Save   D BIOS default   Esc Back", 0
+s_none:   db 0
+s_osaved: db "Saved: this order is used from the next boot.", 0
+s_odef:   db "Saved: the BIOS default is used from the next boot.", 0
 
 ; ------------------------------------------------------------------ CD-ROM boot (El Torito)
 ; The boot menu's "CD-ROM" choice. The stock BIOS predates El Torito, so this
@@ -3275,6 +3609,35 @@ cd_read:                            ; EAX = CD sector, CX = sectors -> ES:DI. CF
     pop edx
     ret
 
+cd_nomedia:                         ; REQUEST SENSE: CF=0 if the drive reports no disc (ASC 3Ah)
+    push eax
+    push di
+    push es
+    push ds
+    pop es
+    xor eax, eax
+    mov [C_PKT], eax
+    mov [C_PKT + 4], eax
+    mov [C_PKT + 8], eax
+    mov byte [C_PKT], 0x03
+    mov byte [C_PKT + 4], 18
+    mov byte [C_BUF + 12], 0
+    mov di, C_BUF
+    call atapi_packet
+    jc .no
+    cmp byte [C_BUF + 12], 0x3A
+    je .yes
+.no:
+    stc
+    jmp short .x
+.yes:
+    clc
+.x:
+    pop es
+    pop di
+    pop eax
+    ret
+
 cd_tur:                             ; TEST UNIT READY. CF=1 if not ready
     push eax
     xor eax, eax
@@ -3330,6 +3693,13 @@ cd_ready:                           ; wait for a disc: up to ~25 s, Esc cancels.
 .t:
     call cd_tur
     jnc .x
+    cmp byte [gs:V_BOOTQ], 0        ; boot order: no disc for ~2 s -> next device
+    je .slow
+    cmp di, 100 - 8
+    ja .slow
+    call cd_nomedia
+    jnc .no
+.slow:
     cmp di, 99                      ; the first failure is usually just "disc changed"
     jne .dot
     mov si, s_cdwait
@@ -3575,8 +3945,13 @@ cd_boot:
 .say:
     call tty
     mov si, s_cdtail
-    call tty
     mov cx, 2000
+    cmp byte [gs:V_BOOTQ], 0
+    je .tail
+    mov si, s_cdnext                ; boot order: straight on to the next device
+    mov cx, 300
+.tail:
+    call tty
     call delay_ms
     ret
 
@@ -3589,6 +3964,7 @@ s_cdnoboot: db 13, 10, "  this disc is not bootable (no El Torito boot image)", 
 s_cdhd:     db 13, 10, "  hard-disk emulation boot images are not supported", 0
 s_cdread:   db 13, 10, "  read error while loading the boot image", 0
 s_cdtail:   db 13, 10, "Using the normal boot order.", 13, 10, 0
+s_cdnext:   db 13, 10, "Trying the next boot device.", 0
 s_cdnoemu:  db 13, 10, "  El Torito, no emulation: the CD is drive E0h", 13, 10, 0
 s_cdemu:    db 13, 10, "  El Torito, floppy emulation: the CD is drive A:", 0
 s_cdrealb:  db ", the floppy drive is B:"
@@ -5078,6 +5454,10 @@ page_summary:
     mov si, l_video
     call label
     call video_value
+    mov dh, 18
+    mov si, l_order
+    call label
+    call order_line
     ; footer and a 3 second wait (any key ends it; the key is left for POST)
     mov byte [gs:V_ATTR], A_BAR
     mov dx, 0x1800
@@ -5150,6 +5530,7 @@ page_summary:
     pop es
     ret
 l_mem: db "Memory", 0
+l_order: db "Boot order", 0
 l_cache: db "Level 1 cache", 0
 
 align 2, db 0                       ; the checksum covers whole words

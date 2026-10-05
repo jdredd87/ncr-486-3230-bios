@@ -266,6 +266,10 @@ def hooked(m):
     m.set_vector(0x19, *ROMBOOT)                 # as the PicoMEM ROM does at its init
 
 
+def order_c_only(m):
+    m.cmos[0x4A:0x4E] = bytes([ord("O"), 0x20, 0x00, ~(ord("O") + 0x20) & 0xFF])
+
+
 def postend(m):
     m.near_call(0xF000, G_BASE + 3, max_insns=200_000_000, **POST_STACK)
 
@@ -289,8 +293,8 @@ check(boot19(m) == "bios", "option ROM: when it falls back to INT 19h, the BIOS 
 m = machine(flag=0xA5)
 hooked(m)
 postend(m)
-m.cmos[0x4A] = ord("B")
-check(boot19(m) == "bios", "option ROM: boot order 'BIOS first' (CMOS 4Ah) skips the ROM's boot")
+order_c_only(m)
+check(boot19(m) == "bios", "option ROM: a saved boot order without it (C: only) skips the ROM's boot")
 
 m = machine(flag=0xA5, master="disk")
 m.cmos[0x12] = 0x20
@@ -310,18 +314,14 @@ hooked(m)
 postend(m)
 run_tools(m, [], page=1)
 t = text(m)
-check("4  Option ROM boot (PicoMEM BIOS v1.2 (test ROM))" in t and "option ROM's own boot first" in t,
+check("4  Option ROM boot (PicoMEM BIOS v1.2 (test ROM))" in t and "BIOS default (option ROM boot first" in t,
       "boot menu: lists the option ROM's boot by name, and the normal order")
-run_tools(m, [key("o")], page=1)
-check(m.cmos[0x4A] == ord("B") and "BIOS first: A:, C:" in text(m), "boot menu: O switches the order to BIOS first")
-run_tools(m, [key("o")], page=1)
-check(m.cmos[0x4A] != ord("B"), "boot menu: O switches it back")
 r = run_tools(m, [key("4")], page=1)
 img = open(os.path.join(HERE, "..", "build", "NCR3230-203-improved.BIN"), "rb").read()
 check(r == "returned" and m.mem_byte(0x4F2) == 0xFE and m.read(0xE8000, 0x8000) == img[0x8000:0x10000],
       "boot menu: 4 chooses the option ROM's boot once (Tools returns, ROM untouched)")
-m.cmos[0x4A] = ord("B")
-check(boot19(m) == "rom", "option ROM: chosen with 4, it boots even with 'BIOS first'")
+order_c_only(m)
+check(boot19(m) == "rom", "option ROM: chosen with 4, it boots even when the saved order leaves it out")
 
 m = machine(flag=0xA5)
 postend(m)

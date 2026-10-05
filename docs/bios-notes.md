@@ -51,7 +51,12 @@ Inside the F000 segment:
   - 44h = E5h, 47h = 4Eh (bit 6 = boot from floppy).
 - **RTC setup.** RTC register B is sanitized at F000:2258 and register A is set to 26h at F000:2BBA. The time-of-day conversion (F000:8192) range-checks every field. A battery-less boot is safe, but the stock BIOS stops at "Battery Power Lost … Press <F1> or <ENTER>". The `error_prompts` patch makes that prompt, and the "Press <ENTER> to continue" prompt for other errors, count down and continue.
 - **CMOS 48h** is unused by the stock BIOS (POST's defaults clear only 10h–47h). The `fancy_boot` patch uses it as the boot-screen switch: A5h means off, and anything else means on. Setup's F2 screen toggles it with F3.
-- **CMOS 4Ah** is also unused by the stock BIOS. `tools_rom` stores the normal boot order there: `B` (42h) means BIOS first, and anything else means an option ROM's boot first. The boot menu's O key toggles it. It is outside both checksums.
+- **CMOS 4Ah–4Dh** are also unused by the stock BIOS. `tools_rom` stores the saved boot order there:
+  - 4Ah = `O`;
+  - 4Bh and 4Ch = four device nibbles, the first place in the high nibble of 4Bh (0 none, 1 A:, 2 C:, 3 CD-ROM, 4 option ROM boot);
+  - 4Dh = the NOT of the 8-bit sum of 4Ah–4Ch.
+
+  Anything else means the BIOS default. These bytes are outside both checksums and survive POST's defaults, so the check byte guards against garbage after a battery loss.
 - **Date.** INT 1Ah AH=04h/05h use the century byte (32h), so there is no Y2K bug there. Setup accepts years 1980–2099 with correct leap years. Unpatched, two-digit years 00–79 are rejected (the `setup_year` patch fixes that).
 - **CPU speed.** In the stock BIOS "PROCESSOR SPEED: xx MHz" prints CMOS 43h, which neither POST nor Setup writes. With `tools_rom` it shows the measured clock.
 
@@ -117,16 +122,18 @@ Zero-filled areas in the F000 segment:
   - 0500:0000–05FF (linear 05000–055FF): variables, the IDE identify buffer and the timing loop.
   - 0000:6000–7000: private stack.
   - 0000:04F0–04F2 (the inter-application area): a one-shot boot choice, `NB` + drive (00h, 80h, E0h for the CD-ROM, FEh for the option ROM's boot).
-  - 0000:04F3: the boot decision during INT 19h: 0 undecided, `B` BIOS first, `R` option ROM chosen, `P` option ROM already called.
+  - 0000:04F3: the boot decision during INT 19h: 0 undecided, `E` saved order tried to the end, `R` option ROM chosen, `P` option ROM already called. 0000:04F4: the next place in the saved order. Both are cleared at the end of POST.
 
   None of it is used once DOS starts. The memory test skips the first 64 KB for this reason. The one exception is a CD-ROM boot: its RAM block stays at the top of base memory (40:13 is lowered by 3 KB).
 - **Option ROMs that hook INT 19h** (the PicoMEM does, always). At the end of POST, `capture19` checks INT 19h. If it no longer points to F000:E6F2, it saves that vector at F000:EF06 (shadow unlocked, checked by reading it back) and points INT 19h back to F000:E6F2. The glue's INT 19h then does this:
   1. It runs the boot menu's choice, if any.
-  2. If the choice was 4, or nothing was decided and CMOS 4Ah isn't `B`, it marks 0:04F3 = `P` and jumps to the saved handler.
-  3. Otherwise it continues with the stock boot (F000:E066).
+  2. Next it runs the saved boot order (`boot_by_order`), from the place reached so far. An "option ROM boot" place sets `R` and returns.
+  3. On `R`, or when nothing was decided (no saved order), it marks 0:04F3 = `P` and jumps to the saved handler.
+  4. Otherwise it continues with the stock boot (F000:E066).
 
-  The `P` mark makes the card's own fall-back work: the PicoMEM restores the vector it saved (F000:E6F2) and calls INT 19h again, which then goes to the stock boot. Without shadow RAM the vector is left with the ROM, as in the stock BIOS. The PicoMEM BIOS source (github.com/FreddyVRetro/ISA-PicoMEM, `pmbios/pmbios.asm`) shows the behaviour this relies on: PM_InstallIRQ19 at ROM init, PM_Int19h with PMCFG_PMBOOT and the legacy path, and PMCFG_PREBOOT for setup at ROM init.
+  The `P` mark makes the card's own fall-back work: the PicoMEM restores the vector it saved (F000:E6F2) and calls INT 19h again. That continues the saved order where it stopped, or goes to the stock boot. Without shadow RAM the vector is left with the ROM, as in the stock BIOS. The PicoMEM BIOS source (github.com/FreddyVRetro/ISA-PicoMEM, `pmbios/pmbios.asm`) shows the behaviour this relies on: PM_InstallIRQ19 at ROM init, PM_Int19h with PMCFG_PMBOOT and the legacy path, and PMCFG_PREBOOT for setup at ROM init.
 - **System summary.** It is shown for 146 ticks (8 s) by the BIOS tick count, with a countdown on the bottom line, unless a key is pressed. Space holds it; after that F1, F8 and F10 stay in the keyboard buffer for POST, and any other key is taken and boots. A loop counter ends the wait if the timer doesn't tick. Before this fix that counter ran out first on real hardware, so the summary vanished after about a second.
+- **CD-ROM in the boot order.** `cd_ready` normally waits up to about 25 s for a disc. In the boot order (V_BOOTQ = 1), after 8 failed TEST UNIT READYs (about 2 s) it sends REQUEST SENSE. If the drive reports ASC 3Ah (medium not present), it gives up. A failed CD then pauses 0.3 s instead of 2 s.
 - **CD-ROM boot (El Torito).** The boot menu's choice 3 stores drive E0h in the one-shot marker. INT 19h then runs `cd_boot`:
   - Finds the ATAPI device with IDENTIFY PACKET DEVICE.
   - Takes 3 KB from the top of base memory (40:13) for a RAM block: a stub that INT 13h points to, the variables, and a 2 KB sector cache.

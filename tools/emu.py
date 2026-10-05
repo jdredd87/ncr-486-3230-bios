@@ -87,9 +87,10 @@ class AtaDisk:
 class Atapi:
     """ATAPI CD-ROM backed by an ISO image (bytes)."""
 
-    def __init__(self, iso=b"", model="EMU ATAPI CDROM"):
-        self.iso, self.model = iso, model
+    def __init__(self, iso=b"", model="EMU ATAPI CDROM", no_disc=False):
+        self.iso, self.model, self.no_disc = iso, model, no_disc
         self.sense = 0x06            # unit attention after power-on, like real drives
+        self.asc = 0                 # additional sense code (3Ah = medium not present)
 
     def identify_packet(self):
         w = [0] * 256
@@ -318,6 +319,9 @@ class IdeChannel:
         d = self.cur()
         op = pkt[0]
         self.log.append((self.sel, "pkt", pkt.hex()))
+        if d.no_disc and op in (0x00, 0x28, 0x25):
+            d.sense, d.asc = 0x02, 0x3A      # not ready: medium not present
+            return self.check_condition()
         if op == 0x28:                       # READ(10)
             lba = struct.unpack(">I", pkt[2:6])[0]
             cnt = struct.unpack(">H", pkt[7:9])[0]
@@ -338,8 +342,8 @@ class IdeChannel:
             self.packet_done()
         elif op == 0x03:                     # REQUEST SENSE
             s = bytearray(18)
-            s[0], s[2], s[7] = 0x70, d.sense, 10
-            d.sense = 0
+            s[0], s[2], s[7], s[12] = 0x70, d.sense, 10, d.asc
+            d.sense, d.asc = 0, 0
             self.packet_data(bytes(s[:pkt[4] or 18]))
         elif op == 0x1B:                     # START STOP UNIT
             self.packet_done()

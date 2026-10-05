@@ -13,7 +13,8 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 - Error prompts ("Press F1", "Press ENTER") continue on their own after a countdown.
 - A blue boot screen with credits, coloured messages and a start-up chime. It can be switched off in Setup.
 - An end-of-POST **system summary**: processor and measured clock, memory, caches, drives, ports and video. It shows for 8 s with a countdown; Space holds it.
-- **F8 boot menu**: boot once from A:, C:, the **CD-ROM**, or an option ROM such as the PicoMEM. It also sets the normal boot order.
+- **F8 boot menu**: boot once from A:, C:, the **CD-ROM**, or an option ROM such as the PicoMEM.
+- **Saved boot order**, as on later BIOSes: up to four devices (A:, C:, CD-ROM, option ROM), tried in order at every boot. Missing or unbootable devices are skipped.
 - **F10 Tools**: system information, drives, memory map, memory test, CMOS viewer, NCR's floppy drive test, **Hard disk setup** and the boot menu.
 
 **Hard disks**
@@ -38,9 +39,9 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 | `hdd_auto` | After lost settings, C: and D: default to Automatic, and the defaults are saved with valid checksums. The disk init is no longer skipped after a settings loss. An Automatic drive that isn't connected is skipped without "Disk controller failure", a countdown or a phantom drive. |
 | `setup_year` | Setup accepts two-digit years 00–79 as 2000–2079. |
 | `fancy_boot` | The blue boot screen, coloured messages and credits. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). With it off, POST looks exactly as before. |
-| `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
+| `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, saved boot order, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
 
-Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 278 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 296 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
 
 **Is the Tools area reachable on your board?** The boot screen shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off and everything else works.
 
@@ -63,10 +64,29 @@ Each patch is NASM source in `patches/src/` that checks the original bytes it re
 | 2 | Hard disk C: |
 | 3 | CD-ROM (the drive's name is shown) |
 | 4 | The option ROM's own boot, when a card such as the PicoMEM hooked the boot (its name is shown) |
-| O | Changes the **normal boot order**, saved in CMOS 4Ah: "option ROM first" (the default) or "BIOS first: A:, C:" |
+| O | Opens the **boot order** editor (see below) |
 | Esc | Normal boot order |
 
-A choice from 1–4 applies to this boot only.
+A choice from 1–4 applies to this boot only. If it fails, the saved boot order follows.
+
+### Boot order (F8, then O)
+
+Four places, each one of: Floppy A:, Hard disk C:, CD-ROM, Option ROM boot, or nothing. At every boot they are tried in turn:
+
+- **Floppy A: and hard disk C:** boot if a boot sector can be read. A hard disk also needs the 55AAh signature.
+- **CD-ROM:** a bootable disc boots. With no disc, it gives up after about 2 s. A disc still spinning up is waited for, and Esc skips it.
+- **Option ROM boot:** the card's own boot, for example the PicoMEM's. When the card hands back to the BIOS, the next place is tried.
+- **When everything fails**, the stock boot takes over, with its "insert system disk" prompt.
+
+| Key | Does |
+|---|---|
+| ↑ ↓ | Choose a place |
+| ← → or Space | Change the device in that place. A device already used elsewhere swaps places with it. |
+| S | Save (CMOS 4Ah–4Dh, with a check byte) |
+| D | Back to the BIOS default |
+| Esc | Leave without saving |
+
+Until an order is saved, the **BIOS default** applies: an option ROM's own boot first (if a card hooked the boot), then A: and C: as Setup sets them. The order needs a working CMOS battery. Without one it is lost at power-off, and the default applies. The system summary shows the order in use.
 
 ### Cards that take over booting (PicoMEM)
 
@@ -74,7 +94,7 @@ Option ROMs such as the PicoMEM's hook the boot (INT 19h) and boot their own way
 
 - **By default nothing changes.** The card's boot runs first, as it is configured. When it falls back to the BIOS (for example with PicoMEM boot switched off in its menu), the BIOS boot order follows.
 - **A boot-menu choice always wins.** F8 then 3 boots the CD-ROM, and F8 then 2 boots C:, even with the card installed.
-- **"BIOS first"** (F8, then O) skips the card's boot every time. F8 then 4 still runs it once.
+- **A saved boot order** puts the card's boot exactly where you want it, or leaves it out (for example "CD-ROM, Hard disk C:"). F8 then 4 still runs it once.
 
 Notes:
 - The PicoMEM normally does its own setup when its ROM starts ("pre-boot", its default), so skipping its boot loses nothing. If its pre-boot setup is turned off, it sets itself up only during its own boot, so choose 4, or the option-ROM-first order, to have it.
@@ -131,7 +151,7 @@ The ROM area E8000–EFFFF holds code that runs after boot: large-disk mode and 
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `a522e3446d636f1999d09554697ebb8f3eb404079ee35aa97450cdf67fc8a502`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `45bd15d0f44b558d27ded04c85b5422fd34916877ed9b8a3fa708e91a010878b`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
@@ -172,7 +192,7 @@ Build USERHDD from `userhdd/`:
 |---|---|
 | `patches/src/` | Patch sources (NASM). `patches/*.patch` are generated from them. |
 | `tools/` | Disassembler, patch assembler and applier, ROM builder, checksum fixer, emulator (`emu.py`: CPU, CMOS, IDE disks, ATAPI CD-ROM with ISO images, video; `dosemu.py`), `userhdd.py` (DEBUG-script fallback for USERHDD) |
-| `tests/` | Emulator tests: `test_patches` (POST fixes), `test_fancy` (boot screen, Setup option), `test_tools` (Tools, summary, boot menu, option ROMs), `test_cdboot` (El Torito ISOs built on the fly), `test_hdsetup`, `test_lba` (2 GB and 34 GB disks), `test_userhdd*` |
+| `tests/` | Emulator tests: `test_patches` (POST fixes), `test_fancy` (boot screen, Setup option), `test_tools` (Tools, summary, boot menu, option ROMs), `test_cdboot` (El Torito ISOs built on the fly by `isotools.py`), `test_bootorder`, `test_hdsetup`, `test_lba` (2 GB and 34 GB disks), `test_userhdd*` |
 | `out/` | Disassembly listings of the system BIOS and the Setup module |
 | `split/` | The VGA BIOS and system BIOS cut out of the image |
 | `docs/` | [BIOS notes](docs/bios-notes.md) (memory map, POST, CMOS, disks, everything the patches add), [hardware notes](docs/hardware-notes.md) (L2 cache, P1 connector, CPU upgrades), and the P1 probe worksheet |
