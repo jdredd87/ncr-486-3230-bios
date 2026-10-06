@@ -225,4 +225,4 @@ Build USERHDD from `userhdd/`:
 
 ## Copyright
 
-The ROM image, the images derived from it (`split/`, `build/`) and the disassembly listings (`out/`) contain NCR Corporation and Cirrus Logic firmware. They are kept here for personal repair and preservation of this machine; this repository is private. The tools, patches and documentation are original work.
+The ROM image, the images derived from it (`split/`, `build/`) and the disassembly listings (`out/`) contain NCR Corporation and Cirrus Logic firmware. They are included for the repair and preservation of these machines, and remain the property of their owners. The tools, patches and documentation are original work by StevenC & Claude.
