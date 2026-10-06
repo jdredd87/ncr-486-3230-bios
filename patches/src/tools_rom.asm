@@ -349,6 +349,13 @@ V_CS81      equ 0x185               ; chipset settings: 81h bits 2-0, 82h bits 1
 V_CS82      equ 0x186
 V_CS91      equ 0x187
 V_CSEL      equ 0x188
+V_PNF       equ 0x190               ; ISA PnP settings (CMOS 55h-5Eh): bit 0 = off
+V_PNIRQ     equ 0x191               ; word: IRQs kept free
+V_PNDMA     equ 0x193               ; DMA channels kept free
+V_PNIO1     equ 0x194               ; I/O ranges kept free: base word, length byte (x2)
+V_PNL1      equ 0x196
+V_PNIO2     equ 0x197
+V_PNL2      equ 0x199
 V_IDBUF     equ 0x200               ; 512 bytes
 V_TLOOP     equ 0x400               ; timing loop copied to RAM
 
@@ -1611,6 +1618,14 @@ page_menu:
     je .down
     cmp al, 0x0D
     je .open
+    push ax
+    or al, 0x20
+    cmp al, 'p'                     ; P: Plug and Play
+    pop ax
+    jne .notp
+    mov byte [gs:V_SEL], MENU_N - 2
+    jmp short .open
+.notp:
     cmp al, '0'                     ; 0: the last item (continue booting)
     jne .digit
     mov al, '0' + MENU_N
@@ -1643,10 +1658,10 @@ page_menu:
 .exit:
     ret
 
-MENU_N equ 10
-menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8, m9, m10
+MENU_N equ 11
+menu_items: dw m1, m2, m3, m4, m5, m6, m7, m8, m9, mp, m10
 menu_pages: dw page_sysinfo, page_drives, page_memmap, page_memtest, page_cmos, page_fdtest, page_hdsetup
-            dw page_boot_menu, page_chipset
+            dw page_boot_menu, page_chipset, page_pnp
 m1: db "1  System information", 0
 m2: db "2  Drives and devices", 0
 m3: db "3  Memory map and option ROMs", 0
@@ -1656,9 +1671,10 @@ m6: db "6  Floppy drive test (NCR built-in)", 0
 m7: db "7  Hard disk setup", 0
 m8: db "8  Boot menu", 0
 m9: db "9  Chipset settings and registers", 0
+mp:  db "P  Plug and Play cards (ISA)", 0
 m10: db "0  Continue booting", 0
 t_menu: db "Tools", 0
-h_menu: db 0x18, 0x19, " Select   Enter Open   0-9 Shortcut   Esc Continue booting", 0
+h_menu: db 0x18, 0x19, " Select   Enter Open   0-9, P Shortcut   Esc Continue booting", 0
 h_back: db "Any key returns to the menu", 0
 
 page_sysinfo:
@@ -2248,6 +2264,1636 @@ s_ok: db "OK", 0
 s_lost: db "power was lost", 0
 s_on: db "on", 0
 s_off: db "off", 0
+
+; ------------------------------------------------------------------ ISA Plug and Play
+; The BIOS predates the PnP BIOS specification, so ISA PnP cards (Sound
+; Blaster AWE64, PnP network and modem cards) come up switched off and DOS
+; needs CTCM or ICU to use them. At the end of POST this finds the cards
+; (PnP ISA 1.0a: initiation key, serial isolation, CSNs), reads each card's
+; resource data, gives every logical device I/O, IRQ and DMA that do not clash
+; with the motherboard or with what the user keeps free for non-PnP cards,
+; and activates it. Windows 95 and CTCM can still reconfigure the cards later.
+; Settings, CMOS 54h-5Fh: 54h 'P', 55h bit 0 = off, 56h/57h IRQs kept free,
+; 58h DMA channels kept free, 59h-5Bh and 5Ch-5Eh two I/O ranges kept free
+; (base word, length byte), 5Fh = NOT sum 54h-5Eh. Shift at the end of POST
+; skips it once, like the chipset settings.
+
+PNP_ADDR    equ 0x279
+PNP_WDATA   equ 0xA79
+PNPSEG      equ 0x0800              ; linear 8000h-8FFFh: work area, only until INT 19h
+PN_INDEX    equ 0x54
+PN_SIG      equ 'P'
+P_BUF       equ 0x000               ; resource data of the card being configured
+P_BUFMAX    equ 0x700
+P_RDP       equ 0x700               ; read-data port in use
+P_NCARD     equ 0x702
+P_NLD       equ 0x703
+P_STAT      equ 0x704               ; 0 not run, 1 off, 2 skipped (Shift), 3 done
+P_IRQ       equ 0x706               ; IRQs in use (word)
+P_DMA       equ 0x708               ; DMA channels in use
+P_NUSED     equ 0x709               ; I/O ranges in use
+P_ID        equ 0x70A               ; 9 bytes: serial identifier being isolated
+P_CUR       equ 0x714               ; current card (0-based), CSN = card + 1
+P_LDN       equ 0x715               ; current logical device number on the card
+P_LDSTART   equ 0x716               ; word: buffer offset of the current device's first descriptor
+P_CHOSEN    equ 0x718               ; dependent function being tried
+P_TNIO      equ 0x719               ; trial: I/O bases, IRQs, DMA channels assigned
+P_TNIRQ     equ 0x71A
+P_TNDMA     equ 0x71B
+P_TIRQ      equ 0x71C               ; trial copies of the in-use sets
+P_TDMA      equ 0x71E
+P_TUSED     equ 0x71F
+P_TIO       equ 0x720               ; 8 words
+P_TIRQS     equ 0x730               ; 2 bytes
+P_TDMAS     equ 0x732               ; 2 bytes
+P_LDEND     equ 0x734               ; word: end of the current device's descriptors
+P_SETS      equ 0x736               ; dependent functions in the device
+P_DEP       equ 0x737               ; dependent function being walked (0FFh: common part)
+P_DEPCNT    equ 0x738
+P_ENTRY     equ 0x73A               ; word: the device's entry in P_LDS
+P_USED      equ 0x740               ; 40 x (base word, length word)
+P_CARDS     equ 0x800               ; 4 x 48: EISA id 4, serial 4, name 40
+P_LDS       equ 0x900               ; 12 x 20: card, ldn, id 4, nio, io 4 words, irq, dma 2, status
+LD_SIZE     equ 20
+LD_MAX      equ 12
+
+pnp_wr:                             ; PnP register AL = AH
+    push dx
+    mov dx, PNP_ADDR
+    out dx, al
+    xchg al, ah
+    mov dx, PNP_WDATA
+    out dx, al
+    xchg al, ah
+    pop dx
+    ret
+
+pnp_rd:                             ; PnP register AL -> AL
+    push dx
+    mov dx, PNP_ADDR
+    out dx, al
+    mov dx, [fs:P_RDP]
+    in al, dx
+    pop dx
+    ret
+
+pnp_rdata:                          ; read the read-data port
+    push dx
+    mov dx, [fs:P_RDP]
+    in al, dx
+    pop dx
+    ret
+
+pnp_key:                            ; initiation key: two zero writes, then the 32-byte LFSR
+    push ax
+    push cx
+    push dx
+    mov dx, PNP_ADDR
+    xor al, al
+    out dx, al
+    out dx, al
+    mov al, 0x6A
+    mov cx, 32
+.k:
+    out dx, al
+    mov ah, al
+    shr ah, 1
+    xor ah, al
+    and ah, 1
+    ror ah, 1
+    shr al, 1
+    or al, ah
+    loop .k
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+delay_t:                            ; CX refresh toggles (15 us each)
+    push ax
+    push cx
+    push dx
+    in al, 0x61
+    and al, 0x10
+    mov ah, al
+.t:
+    mov dx, 2000
+.s:
+    in al, 0x61
+    and al, 0x10
+    cmp al, ah
+    jne .f
+    dec dx
+    jnz .s
+.f:
+    mov ah, al
+    loop .t
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+pnp_set_rdp:
+    mov ax, [fs:P_RDP]
+    shr ax, 2
+    mov ah, al
+    xor al, al                      ; register 00h: read-data port, bits 9-2
+    jmp pnp_wr
+
+; Find the cards and give each a CSN. -> P_NCARD, card ids in P_CARDS.
+pnp_isolate:
+    mov byte [fs:P_NCARD], 0
+    mov si, pnp_ports
+.port:
+    mov ax, [cs:si]
+    test ax, ax
+    jz .x
+    mov [fs:P_RDP], ax
+    call pnp_key
+    mov ax, 0x0402                  ; config control: every card's CSN back to 0
+    call pnp_wr
+    mov cx, 2
+    call delay_ms
+    mov ax, 0x0003                  ; wake CSN 0: all cards into isolation
+    call pnp_wr
+    call pnp_set_rdp
+    mov cx, 1
+    call delay_ms
+.card:
+    push si
+    call pnp_iso1
+    pop si
+    jc .none
+    inc byte [fs:P_NCARD]
+    mov ah, [fs:P_NCARD]
+    mov al, 0x06                    ; this card's CSN
+    call pnp_wr
+    movzx di, byte [fs:P_NCARD]
+    dec di
+    imul di, di, 48
+    add di, P_CARDS
+    mov bx, P_ID
+    mov cx, 8
+.cp:
+    mov al, [fs:bx]
+    mov [fs:di], al
+    inc bx
+    inc di
+    loop .cp
+    mov byte [fs:di], 0             ; no name yet
+    cmp byte [fs:P_NCARD], 4
+    jae .x
+    mov ax, 0x0003
+    call pnp_wr
+    call pnp_set_rdp
+    mov cx, 1
+    call delay_ms
+    jmp .card
+.none:
+    cmp byte [fs:P_NCARD], 0
+    jne .x
+    add si, 2                       ; nothing answered: try another read-data port
+    jmp .port
+.x:
+    ret
+
+pnp_ports:  dw 0x273, 0x20B, 0x3E3, 0
+
+pnp_iso1:                           ; one round of serial isolation -> P_ID, CF=1 if no card
+    mov dx, PNP_ADDR
+    mov al, 0x01                    ; serial isolation register
+    out dx, al
+    mov cx, 66
+    call delay_t
+    mov di, P_ID
+    mov cx, 9
+.z:
+    mov byte [fs:di], 0
+    inc di
+    loop .z
+    mov bh, 0x6A                    ; checksum LFSR
+    xor di, di                      ; bit number
+.b:
+    call pnp_rdata
+    mov ah, al
+    mov cx, 17                      ; 250 us
+    call delay_t
+    call pnp_rdata
+    mov cx, 17
+    call delay_t
+    xor bl, bl
+    cmp ax, 0x55AA
+    jne .zero
+    mov bl, 1
+.zero:
+    cmp di, 64
+    jae .store
+    mov al, bh                      ; checksum = ((((c ^ c>>1) & 1) ^ bit) << 7) | c >> 1
+    shr al, 1
+    xor al, bh
+    and al, 1
+    xor al, bl
+    ror al, 1
+    shr bh, 1
+    or bh, al
+.store:
+    test bl, bl
+    jz .nb
+    mov cx, di
+    and cl, 7
+    mov al, 1
+    shl al, cl
+    mov si, di
+    shr si, 3
+    or [fs:P_ID + si], al
+.nb:
+    inc di
+    cmp di, 72
+    jb .b
+    cmp [fs:P_ID + 8], bh
+    jne .no
+    mov ax, [fs:P_ID]
+    or ax, [fs:P_ID + 2]
+    jz .no
+    clc
+    ret
+.no:
+    stc
+    ret
+
+pnp_rbyte:                          ; next resource data byte -> AL. CF=1 on time-out
+    push cx
+    mov cx, 200
+.w:
+    mov al, 0x05                    ; status: bit 0 = a byte is ready
+    call pnp_rd
+    test al, 1
+    jnz .r
+    push cx
+    mov cx, 7
+    call delay_t
+    pop cx
+    loop .w
+    pop cx
+    stc
+    ret
+.r:
+    mov al, 0x04
+    call pnp_rd
+    pop cx
+    clc
+    ret
+
+pnp_readres:                        ; P_CUR's resource data -> P_BUF. CF=1 if unreadable
+    mov ah, [fs:P_CUR]
+    inc ah
+    mov al, 0x03                    ; wake this CSN
+    call pnp_wr
+    mov cx, 9                       ; the serial identifier comes first
+.id:
+    call pnp_rbyte
+    jc .x
+    loop .id
+    xor di, di
+.tag:
+    call pnp_rbyte
+    jc .x
+    call .put
+    jc .x
+    test al, 0x80
+    jnz .large
+    mov bl, al
+    movzx cx, al
+    and cl, 7
+    call .copy
+    jc .x
+    shr bl, 3
+    and bl, 0x0F
+    cmp bl, 0x0F                    ; end tag
+    jne .tag
+    clc
+    ret
+.large:
+    call pnp_rbyte
+    jc .x
+    call .put
+    jc .x
+    mov cl, al
+    call pnp_rbyte
+    jc .x
+    call .put
+    jc .x
+    mov ch, al
+    call .copy
+    jc .x
+    jmp short .tag
+.x:
+    stc
+    ret
+.copy:                              ; CX more bytes
+    jcxz .cok
+.cl:
+    call pnp_rbyte
+    jc .cx
+    call .put
+    jc .cx
+    loop .cl
+.cok:
+    clc
+.cx:
+    ret
+.put:
+    cmp di, P_BUFMAX
+    jae .full
+    mov [fs:P_BUF + di], al
+    inc di
+    clc
+    ret
+.full:
+    stc
+    ret
+
+; Tag at FS:SI -> AL = small tag number (0Fh end) or 80h+item, CX = data length,
+; DI = offset of the data. SI is not changed.
+pnp_tag:
+    mov al, [fs:si]
+    test al, 0x80
+    jnz .large
+    movzx cx, al
+    and cl, 7
+    shr al, 3
+    and al, 0x0F
+    lea di, [si + 1]
+    ret
+.large:
+    mov cx, [fs:si + 1]
+    lea di, [si + 3]
+    ret
+
+pnp_next:                           ; SI past the tag at SI
+    push ax
+    push cx
+    push di
+    call pnp_tag
+    add di, cx
+    mov si, di
+    pop di
+    pop cx
+    pop ax
+    ret
+
+; Configure every logical device of card P_CUR (resource data in P_BUF).
+pnp_card:
+    mov byte [fs:P_LDN], 0xFF
+    xor si, si
+.l:
+    cmp si, P_BUFMAX - 3
+    jae .done
+    call pnp_tag
+    cmp al, 0x82                    ; ANSI name: the card's, if no device yet
+    jne .nname
+    cmp byte [fs:P_LDN], 0xFF
+    jne .next
+    call pnp_cardname
+    jmp short .next
+.nname:
+    cmp al, 0x02                    ; logical device ID
+    jne .nld
+    call pnp_ldend
+    inc byte [fs:P_LDN]
+    mov [fs:P_LDSTART], si
+    jmp short .next
+.nld:
+    cmp al, 0x0F
+    je .end
+.next:
+    call pnp_next
+    jmp short .l
+.end:
+    call pnp_ldend
+.done:
+    ret
+
+pnp_cardname:                       ; DI = name data, CX = length -> the card's table entry
+    push si
+    movzx bx, byte [fs:P_CUR]
+    imul bx, bx, 48
+    add bx, P_CARDS + 8
+    cmp cx, 39
+    jbe .n
+    mov cx, 39
+.n:
+    jcxz .e
+.c:
+    mov al, [fs:di]
+    mov [fs:bx], al
+    inc di
+    inc bx
+    loop .c
+.e:
+    mov byte [fs:bx], 0
+    dec bx                          ; trim trailing blanks
+    cmp byte [fs:bx], ' '
+    je .e
+    pop si
+    ret
+
+; The device that started at P_LDSTART ends at SI: choose resources and activate it.
+pnp_ldend:
+    cmp byte [fs:P_LDN], 0xFF
+    je .x
+    movzx bx, byte [fs:P_NLD]
+    cmp bx, LD_MAX
+    jae .x
+    push si
+    imul bx, bx, LD_SIZE
+    add bx, P_LDS
+    mov al, [fs:P_CUR]
+    mov [fs:bx], al
+    mov al, [fs:P_LDN]
+    mov [fs:bx + 1], al
+    mov [fs:P_ENTRY], bx
+    mov si, [fs:P_LDSTART]
+    mov eax, [fs:si + 1]            ; EISA id after the tag byte
+    mov [fs:bx + 2], eax
+    mov byte [fs:bx + 19], 2        ; failed, until a set fits
+    mov byte [fs:P_CHOSEN], 0
+.try:
+    pop di                          ; DI = end of this device
+    push di
+    call pnp_trial
+    jnc .fits
+    cmp al, 2                       ; no more dependent functions
+    je .fail
+    inc byte [fs:P_CHOSEN]
+    jmp short .try
+.fits:
+    call pnp_commit
+    mov bx, [fs:P_ENTRY]
+    mov byte [fs:bx + 19], 1
+.fail:
+    inc byte [fs:P_NLD]
+    pop si
+.x:
+    ret
+
+; Trial allocation for dependent function P_CHOSEN, descriptors from
+; P_LDSTART to DI. CF=0 if everything fits; else AL=1 (try the next set)
+; or AL=2 (no such set).
+pnp_trial:
+    mov [fs:P_LDEND], di
+    mov byte [fs:P_TNIO], 0
+    mov byte [fs:P_TNIRQ], 0
+    mov byte [fs:P_TNDMA], 0
+    mov ax, [fs:P_IRQ]
+    mov [fs:P_TIRQ], ax
+    mov al, [fs:P_DMA]
+    mov [fs:P_TDMA], al
+    mov al, [fs:P_NUSED]
+    mov [fs:P_TUSED], al
+    mov byte [fs:P_SETS], 0         ; count the dependent functions first
+    mov si, [fs:P_LDSTART]
+    call pnp_next
+.cnt:
+    cmp si, [fs:P_LDEND]
+    jae .counted
+    call pnp_tag
+    cmp al, 0x06
+    jne .cn
+    inc byte [fs:P_SETS]
+.cn:
+    call pnp_next
+    jmp short .cnt
+.counted:
+    mov byte [fs:P_DEPCNT], 0
+    mov byte [fs:P_DEP], 0xFF       ; 0FFh: in the common part
+    mov si, [fs:P_LDSTART]
+    call pnp_next                   ; past the device ID
+.l:
+    cmp si, [fs:P_LDEND]
+    jae .end
+    call pnp_tag
+    cmp al, 0x06                    ; start dependent function
+    jne .n6
+    mov ah, [fs:P_DEPCNT]
+    mov [fs:P_DEP], ah
+    inc byte [fs:P_DEPCNT]
+    jmp .next
+.n6:
+    cmp al, 0x07                    ; end dependent functions
+    jne .n7
+    mov byte [fs:P_DEP], 0xFF
+    jmp .next
+.n7:
+    mov ah, [fs:P_DEP]
+    cmp ah, 0xFF
+    je .use
+    cmp ah, [fs:P_CHOSEN]
+    jne .next
+.use:
+    cmp al, 0x08
+    je .io
+    cmp al, 0x09
+    je .fio
+    cmp al, 0x04
+    je .irq
+    cmp al, 0x05
+    je .dma
+    cmp al, 0x81                    ; memory descriptors: not supported here
+    je .bad
+    cmp al, 0x85
+    je .bad
+    cmp al, 0x86
+    je .bad
+    jmp short .next
+.io:
+    mov ax, [fs:di + 1]             ; minimum base
+    mov dx, [fs:di + 3]             ; maximum base
+    movzx bx, byte [fs:di + 5]      ; alignment
+    movzx cx, byte [fs:di + 6]      ; length
+    call pnp_findio
+    jc .bad
+    jmp short .next
+.fio:
+    mov ax, [fs:di]
+    and ax, 0x3FF
+    mov dx, ax
+    mov bx, 1
+    movzx cx, byte [fs:di + 2]
+    call pnp_findio
+    jc .bad
+    jmp short .next
+.irq:
+    mov ax, [fs:di]
+    call pnp_findirq
+    jc .bad
+    jmp short .next
+.dma:
+    mov al, [fs:di]
+    call pnp_finddma
+    jc .bad
+.next:
+    call pnp_next
+    jmp .l
+.end:
+    mov al, [fs:P_SETS]             ; asked for a set that does not exist?
+    test al, al
+    jz .ok                          ; no dependent functions at all
+    cmp [fs:P_CHOSEN], al
+    jae .noset
+.ok:
+    clc
+    ret
+.bad:
+    mov al, [fs:P_SETS]
+    mov ah, [fs:P_CHOSEN]
+    inc ah
+    cmp ah, al                      ; is there another dependent function to try?
+    jae .noset
+    mov al, 1
+    stc
+    ret
+.noset:
+    mov al, 2
+    stc
+    ret
+
+; I/O: AX = min base, DX = max base, BX = alignment, CX = length -> next trial base
+pnp_findio:
+    jcxz .skip                      ; a null descriptor
+    test bx, bx
+    jnz .a
+    mov bx, 1
+.a:
+    cmp byte [fs:P_TNIO], 8
+    jae .no
+.try:
+    cmp ax, dx
+    ja .no
+    call pnp_iofree
+    jnc .got
+    add ax, bx
+    jc .no
+    jmp short .try
+.got:
+    push si                         ; SI is the caller's tag pointer: keep it
+    movzx si, byte [fs:P_TNIO]
+    shl si, 1
+    mov [fs:P_TIO + si], ax
+    inc byte [fs:P_TNIO]
+    cmp byte [fs:P_TUSED], 40
+    jae .full
+    movzx si, byte [fs:P_TUSED]     ; mark the range as taken for this trial
+    shl si, 2
+    mov [fs:P_USED + si], ax
+    mov [fs:P_USED + si + 2], cx
+    inc byte [fs:P_TUSED]
+.full:
+    pop si
+.skip:
+    clc
+    ret
+.no:
+    stc
+    ret
+
+pnp_iofree:                         ; AX = base, CX = length: CF=1 if it overlaps a range in use
+    push bx
+    push dx
+    push si
+    movzx si, byte [fs:P_TUSED]
+.l:
+    test si, si
+    jz .free
+    dec si
+    push si
+    shl si, 2
+    mov bx, [fs:P_USED + si]        ; [bx, bx+len) against [ax, ax+cx)
+    mov dx, bx
+    add dx, [fs:P_USED + si + 2]
+    pop si
+    cmp ax, dx
+    jae .l
+    push ax
+    add ax, cx
+    cmp ax, bx
+    pop ax
+    jbe .l
+    stc
+    jmp short .x
+.free:
+    clc
+.x:
+    pop si
+    pop dx
+    pop bx
+    ret
+
+pnp_findirq:                        ; AX = IRQ mask -> next trial IRQ
+    test ax, ax
+    jz .skip
+    cmp byte [fs:P_TNIRQ], 2
+    jae .no
+    push si
+    mov si, pnp_irqpref
+.l:
+    movzx cx, byte [cs:si]
+    cmp cl, 0xFF
+    je .none
+    inc si
+    bt ax, cx
+    jnc .l
+    bt word [fs:P_TIRQ], cx
+    jc .l
+    bts word [fs:P_TIRQ], cx
+    movzx si, byte [fs:P_TNIRQ]
+    mov [fs:P_TIRQS + si], cl
+    inc byte [fs:P_TNIRQ]
+    pop si
+.skip:
+    clc
+    ret
+.none:
+    pop si
+.no:
+    stc
+    ret
+
+pnp_irqpref: db 5, 10, 11, 7, 9, 15, 12, 3, 4, 14, 6, 0xFF
+
+pnp_finddma:                        ; AL = DMA mask -> next trial channel
+    test al, al
+    jz .skip
+    cmp byte [fs:P_TNDMA], 2
+    jae .no
+    xor cx, cx
+.l:
+    bt ax, cx
+    jnc .n
+    bt word [fs:P_TDMA], cx
+    jnc .got
+.n:
+    inc cx
+    cmp cx, 8
+    jb .l
+.no:
+    stc
+    ret
+.got:
+    bts word [fs:P_TDMA], cx
+    push si
+    movzx si, byte [fs:P_TNDMA]
+    mov [fs:P_TDMAS + si], cl
+    pop si
+    inc byte [fs:P_TNDMA]
+.skip:
+    clc
+    ret
+
+; The trial fits: keep it, record it in the device entry BX, program the card.
+pnp_commit:
+    mov bx, [fs:P_ENTRY]
+    mov ax, [fs:P_TIRQ]
+    mov [fs:P_IRQ], ax
+    mov al, [fs:P_TDMA]
+    mov [fs:P_DMA], al
+    mov al, [fs:P_TUSED]
+    mov [fs:P_NUSED], al
+    mov al, [fs:P_TNIO]
+    mov [fs:bx + 6], al
+    xor si, si
+.io:
+    mov ax, [fs:P_TIO + si]
+    mov [fs:bx + 7 + si], ax
+    add si, 2
+    cmp si, 8
+    jb .io
+    mov al, 0xFF
+    cmp byte [fs:P_TNIRQ], 0
+    je .ni
+    mov al, [fs:P_TIRQS]
+.ni:
+    mov [fs:bx + 15], al
+    mov word [fs:bx + 16], 0xFFFF
+    cmp byte [fs:P_TNDMA], 0
+    je .nd
+    mov al, [fs:P_TDMAS]
+    mov [fs:bx + 16], al
+    cmp byte [fs:P_TNDMA], 1
+    je .nd
+    mov al, [fs:P_TDMAS + 1]
+    mov [fs:bx + 17], al
+.nd:
+    mov ah, [fs:P_LDN]
+    mov al, 0x07                    ; logical device number
+    call pnp_wr
+    xor cx, cx
+.wio:
+    cmp cl, [fs:P_TNIO]
+    jae .wirq
+    movzx si, cl
+    shl si, 1
+    mov dx, [fs:P_TIO + si]
+    mov al, 0x60
+    add al, cl
+    add al, cl
+    mov ah, dh
+    call pnp_wr                     ; base high byte
+    inc al
+    mov ah, dl
+    call pnp_wr                     ; base low byte
+    inc cx
+    jmp short .wio
+.wirq:
+    xor cx, cx
+.wi:
+    movzx si, cl
+    mov ah, 0
+    cmp cl, [fs:P_TNIRQ]
+    jae .wi0
+    mov ah, [fs:P_TIRQS + si]
+.wi0:
+    mov al, 0x70
+    add al, cl
+    add al, cl
+    call pnp_wr                     ; IRQ level (0 = none)
+    inc al
+    mov ah, 0x02                    ; edge, high: ISA
+    call pnp_wr
+    inc cx
+    cmp cx, 2
+    jb .wi
+    xor cx, cx
+.wd:
+    movzx si, cl
+    mov ah, 4                       ; 4 = no DMA
+    cmp cl, [fs:P_TNDMA]
+    jae .wd0
+    mov ah, [fs:P_TDMAS + si]
+.wd0:
+    mov al, 0x74
+    add al, cl
+    call pnp_wr
+    inc cx
+    cmp cx, 2
+    jb .wd
+    mov ax, 0x0031                  ; no I/O range check
+    call pnp_wr
+    mov ax, 0x0130                  ; activate
+    call pnp_wr
+    ret
+
+; What the motherboard and the user's reservations already take.
+pnp_inuse:
+    push es
+    push 0x40
+    pop es
+    mov ax, 0x6147                  ; IRQ 0, 1, 2, 6, 8, 13, 14
+    cmp word [es:0x00], 0
+    je .c1
+    or ax, 1 << 4                   ; COM1
+.c1:
+    cmp word [es:0x02], 0
+    je .c2
+    or ax, 1 << 3                   ; COM2
+.c2:
+    cmp word [es:0x08], 0
+    je .l1
+    or ax, 1 << 7                   ; LPT1
+.l1:
+    cmp word [es:0x0A], 0
+    je .l2
+    or ax, 1 << 5                   ; LPT2
+.l2:
+    test byte [es:0x10], 0x04       ; PS/2 mouse
+    jz .m
+    or ax, 1 << 12
+.m:
+    pop es
+    or ax, [gs:V_PNIRQ]
+    mov [fs:P_IRQ], ax
+    mov al, 0x14                    ; DMA 2 (floppy) and 4 (cascade)
+    or al, [gs:V_PNDMA]
+    mov [fs:P_DMA], al
+    xor bx, bx
+    mov si, pnp_sysio
+.io:
+    mov ax, [cs:si]
+    test ax, ax
+    jz .user
+    mov [fs:P_USED + bx], ax
+    mov ax, [cs:si + 2]
+    mov [fs:P_USED + bx + 2], ax
+    add si, 4
+    add bx, 4
+    jmp short .io
+.user:
+    mov ax, [fs:P_RDP]
+    mov [fs:P_USED + bx], ax
+    mov word [fs:P_USED + bx + 2], 1
+    add bx, 4
+    mov ax, [gs:V_PNIO1]
+    movzx cx, byte [gs:V_PNL1]
+    call .add
+    mov ax, [gs:V_PNIO2]
+    movzx cx, byte [gs:V_PNL2]
+    call .add
+    shr bx, 2
+    mov [fs:P_NUSED], bl
+    ret
+.add:
+    test ax, ax
+    jz .ax
+    jcxz .ax
+    mov [fs:P_USED + bx], ax
+    mov [fs:P_USED + bx + 2], cx
+    add bx, 4
+.ax:
+    ret
+
+pnp_sysio:                          ; base, length
+    dw 0x000, 0x100                 ; motherboard
+    dw 0x170, 8, 0x1F0, 8           ; IDE
+    dw 0x278, 8                     ; LPT2 and the PnP address port
+    dw 0x2E8, 8, 0x2F8, 8           ; COM4, COM2
+    dw 0x370, 8, 0x376, 1, 0x378, 8 ; LPT1
+    dw 0x3B0, 0x30                  ; video
+    dw 0x3E8, 8, 0x3F0, 8, 0x3F8, 8 ; COM3, floppy and IDE, COM1
+    dw 0x3E0, 4                     ; (read-data port candidates)
+    dw 0x208, 4, 0x270, 4
+    dw 0
+
+; Run it all: find, read, configure. Leaves every card waiting for the key.
+pnp_run:
+    push fs
+    push PNPSEG
+    pop fs
+    mov byte [fs:P_NLD], 0
+    call pnp_isolate
+    cmp byte [fs:P_NCARD], 0
+    je .end
+    call pnp_inuse
+    mov byte [fs:P_CUR], 0
+.card:
+    mov al, [fs:P_CUR]
+    cmp al, [fs:P_NCARD]
+    jae .end
+    call pnp_readres
+    jc .skip
+    call pnp_card
+.skip:
+    inc byte [fs:P_CUR]
+    jmp short .card
+.end:
+    mov ax, 0x0202                  ; all cards back to "wait for key"
+    call pnp_wr
+    mov byte [fs:P_STAT], 3
+    pop fs
+    ret
+
+pn_load:                            ; CMOS 54h-5Fh -> V_PN* (defaults: on, nothing kept free)
+    push ax
+    push cx
+    push si
+    mov byte [gs:V_PNF], 0
+    mov word [gs:V_PNIRQ], 0
+    mov byte [gs:V_PNDMA], 0
+    mov dword [gs:V_PNIO1], 0
+    mov dword [gs:V_PNIO1 + 4], 0
+    mov al, PN_INDEX
+    call cmos_read
+    cmp al, PN_SIG
+    jne .x
+    mov cl, al
+    mov ch, PN_INDEX + 1
+    mov si, V_PNF
+.l:
+    mov al, ch
+    call cmos_read
+    add cl, al
+    mov [gs:si], al
+    inc si
+    inc ch
+    cmp ch, PN_INDEX + 11
+    jb .l
+    mov al, PN_INDEX + 11
+    call cmos_read
+    not al
+    cmp al, cl
+    je .x
+    mov byte [gs:V_PNF], 0          ; damaged: defaults
+    mov word [gs:V_PNIRQ], 0
+    mov byte [gs:V_PNDMA], 0
+    mov dword [gs:V_PNIO1], 0
+    mov dword [gs:V_PNIO1 + 4], 0
+.x:
+    pop si
+    pop cx
+    pop ax
+    ret
+
+pn_save:                            ; V_PN* -> CMOS 54h-5Fh
+    push ax
+    push cx
+    push si
+    mov al, PN_INDEX
+    mov ah, PN_SIG
+    call cmos_write
+    mov cl, PN_SIG
+    mov ch, PN_INDEX + 1
+    mov si, V_PNF
+.l:
+    mov ah, [gs:si]
+    add cl, ah
+    mov al, ch
+    call cmos_write
+    inc si
+    inc ch
+    cmp ch, PN_INDEX + 11
+    jb .l
+    mov ah, cl
+    not ah
+    mov al, PN_INDEX + 11
+    call cmos_write
+    pop si
+    pop cx
+    pop ax
+    ret
+
+pnp_boot:                           ; end of POST
+    push fs
+    push PNPSEG
+    pop fs
+    mov byte [fs:P_NCARD], 0
+    mov byte [fs:P_NLD], 0
+    call pn_load
+    mov byte [fs:P_STAT], 1
+    test byte [gs:V_PNF], 1
+    jnz .x
+    mov byte [fs:P_STAT], 2
+    push es
+    push 0x40
+    pop es
+    test byte [es:0x17], 0x03       ; Shift held: skip once
+    pop es
+    jnz .x
+    call pnp_run
+.x:
+    pop fs
+    ret
+
+getval:                             ; BL = radix (10/16), BH = max digits, DX = max -> AX. CF=1 on Esc
+    push bx
+    push cx
+    push si
+    push bp
+    xor cx, cx
+    xor si, si
+    mov byte [gs:V_ATTR], A_SEL
+.k:
+    call getkey
+    cmp ah, 0x01
+    je .esc
+    cmp al, 0x0D
+    je .enter
+    cmp al, 0x08
+    je .bs
+    mov ah, al
+    sub ah, '0'
+    cmp al, '9'
+    jbe .dig
+    or al, 0x20
+    mov ah, al
+    sub ah, 'a' - 10
+    cmp al, 'a'
+    jb .k
+.dig:
+    cmp ah, bl
+    jae .k
+    movzx bp, bh
+    cmp si, bp
+    jae .k
+    mov al, ah
+    add al, '0'
+    cmp ah, 10
+    jb .show
+    add al, 'A' - '0' - 10
+.show:
+    call putc
+    movzx ax, ah
+    push dx
+    movzx dx, bl
+    imul cx, dx
+    pop dx
+    add cx, ax
+    inc si
+    jmp short .k
+.bs:
+    test si, si
+    jz .k
+    dec si
+    mov ax, cx
+    push dx
+    xor dx, dx
+    movzx cx, bl
+    div cx
+    pop dx
+    mov cx, ax
+    dec byte [gs:V_COL]
+    mov al, ' '
+    call putc
+    dec byte [gs:V_COL]
+    jmp short .k
+.enter:
+    test si, si
+    jz .k
+    cmp cx, dx
+    ja .k
+    mov ax, cx
+    mov byte [gs:V_ATTR], A_VALUE
+    clc
+    jmp short .x
+.esc:
+    mov byte [gs:V_ATTR], A_VALUE
+    stc
+.x:
+    pop bp
+    pop si
+    pop cx
+    pop bx
+    ret
+
+pnp_putid:                          ; EAX = compressed EISA id: "CTL0045"
+    push eax
+    push ebx
+    push cx
+    mov ebx, eax
+    mov al, bl
+    shr al, 2
+    and al, 0x1F
+    add al, 0x40
+    call putc
+    mov al, bl
+    and al, 3
+    shl al, 3
+    mov ah, bh
+    shr ah, 5
+    or al, ah
+    add al, 0x40
+    call putc
+    mov al, bh
+    and al, 0x1F
+    add al, 0x40
+    call putc
+    shr ebx, 16
+    movzx eax, bl
+    mov cl, 2
+    call puthex
+    movzx eax, bh
+    call puthex
+    pop cx
+    pop ebx
+    pop eax
+    ret
+
+pnp_hex3:                           ; AX as 3 hex digits
+    push eax
+    push cx
+    movzx eax, ax
+    mov cl, 3
+    cmp ax, 0x1000
+    jb .p
+    mov cl, 4
+.p:
+    call puthex
+    pop cx
+    pop eax
+    ret
+
+pnp_ldline:                         ; FS:BX = device entry: "CTL0045  I/O 220 330  IRQ 5  DMA 1 5"
+    mov eax, [fs:bx + 2]
+    call pnp_putid
+    cmp byte [fs:bx + 19], 1
+    je .ok
+    mov byte [gs:V_ATTR], A_BAD
+    SAY "  not configured: no free resources fit"
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+.ok:
+    movzx cx, byte [fs:bx + 6]
+    jcxz .irq
+    SAY "  I/O"
+    cmp cx, 4
+    jbe .n
+    mov cx, 4
+.n:
+    xor si, si
+.io:
+    mov al, ' '
+    call putc
+    mov ax, [fs:bx + 7 + si]
+    call pnp_hex3
+    add si, 2
+    loop .io
+.irq:
+    mov al, [fs:bx + 15]
+    cmp al, 0xFF
+    je .dma
+    push ax
+    SAY "  IRQ "
+    pop ax
+    movzx eax, al
+    call putdec
+.dma:
+    mov al, [fs:bx + 16]
+    cmp al, 0xFF
+    je .x
+    push ax
+    SAY "  DMA "
+    pop ax
+    movzx eax, al
+    call putdec
+    mov al, [fs:bx + 17]
+    cmp al, 0xFF
+    je .x
+    push ax
+    mov al, ' '
+    call putc
+    pop ax
+    movzx eax, al
+    call putdec
+.x:
+    ret
+
+pnp_isctl:                          ; FS:BX = device entry: ZF=1 if it is a Creative (CTL) device
+    cmp word [fs:bx + 2], 0x8C0E
+    ret
+
+pnp_blaster:                        ; "SET BLASTER=..." for a Creative audio device, CF=1 if none
+    xor cx, cx
+    mov bx, P_LDS
+.find:
+    cmp cl, [fs:P_NLD]
+    jae .none
+    call pnp_isctl
+    jne .nx
+    cmp byte [fs:bx + 19], 1
+    jne .nx
+    cmp byte [fs:bx + 6], 2         ; audio: SB base, MPU base, IRQ, DMA
+    jb .nx
+    cmp byte [fs:bx + 15], 0xFF
+    je .nx
+    cmp byte [fs:bx + 16], 0xFF
+    jne .got
+.nx:
+    add bx, LD_SIZE
+    inc cx
+    jmp short .find
+.none:
+    stc
+    ret
+.got:
+    SAY "SET BLASTER=A"
+    mov ax, [fs:bx + 7]
+    call pnp_hex3
+    SAY " I"
+    movzx eax, byte [fs:bx + 15]
+    call putdec
+    SAY " D"
+    movzx eax, byte [fs:bx + 16]
+    call putdec
+    cmp byte [fs:bx + 17], 0xFF
+    je .nh
+    SAY " H"
+    movzx eax, byte [fs:bx + 17]
+    call putdec
+.nh:
+    SAY " P"
+    mov ax, [fs:bx + 9]
+    call pnp_hex3
+    xor cx, cx                      ; the EMU8000 wavetable: a CTL device at 620h-680h
+    mov bx, P_LDS
+.e:
+    cmp cl, [fs:P_NLD]
+    jae .t
+    call pnp_isctl
+    jne .en
+    cmp byte [fs:bx + 19], 1
+    jne .en
+    mov ax, [fs:bx + 7]
+    cmp ax, 0x620
+    jb .en
+    cmp ax, 0x680
+    ja .en
+    SAY " E"
+    call pnp_hex3
+    jmp short .t
+.en:
+    add bx, LD_SIZE
+    inc cx
+    jmp short .e
+.t:
+    SAY " T6"
+    clc
+    ret
+
+pnp_status:                         ; one line for the summary
+    push fs
+    push PNPSEG
+    pop fs
+    mov al, [fs:P_STAT]
+    cmp al, 1
+    jne .2
+    SAY "off"
+    jmp .x
+.2:
+    cmp al, 2
+    jne .3
+    SAY 1, A_BAD, "skipped this boot (Shift held)", 1, A_VALUE
+    jmp .x
+.3:
+    cmp al, 3
+    jne .x
+    movzx eax, byte [fs:P_NCARD]
+    test al, al
+    jnz .cards
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "no PnP cards found"
+    mov byte [gs:V_ATTR], A_VALUE
+    jmp .x
+.cards:
+    call putdec
+    SAY " card"
+    cmp byte [fs:P_NCARD], 1
+    je .s
+    mov al, 's'
+    call putc
+.s:
+    SAY ", "
+    xor cx, cx                      ; devices configured
+    xor dx, dx
+    mov bx, P_LDS
+.c:
+    cmp dl, [fs:P_NLD]
+    jae .cn
+    cmp byte [fs:bx + 19], 1
+    jne .cf
+    inc cx
+.cf:
+    add bx, LD_SIZE
+    inc dx
+    jmp short .c
+.cn:
+    movzx eax, cx
+    call putdec
+    SAY " of "
+    movzx eax, dl
+    call putdec
+    SAY " devices configured"
+.x:
+    pop fs
+    ret
+
+pnp_listirq:                        ; V_PNIRQ as "3 5" or "none"
+    mov ax, [gs:V_PNIRQ]
+    mov cl, 16
+    jmp short pnp_list
+pnp_listdma:
+    movzx ax, byte [gs:V_PNDMA]
+    mov cl, 8
+pnp_list:                           ; AX = mask, CL = bits
+    test ax, ax
+    jnz .some
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "none"
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+.some:
+    xor bx, bx
+    movzx cx, cl
+.l:
+    bt ax, bx
+    jnc .n
+    push ax
+    movzx eax, bx
+    call putdec
+    mov al, ' '
+    call putc
+    pop ax
+.n:
+    inc bx
+    cmp bx, cx
+    jb .l
+    ret
+
+pnp_listio:                         ; the two I/O ranges kept free
+    xor cx, cx
+    mov si, V_PNIO1
+.r:
+    mov ax, [gs:si]
+    movzx dx, byte [gs:si + 2]
+    test ax, ax
+    jz .n
+    test dx, dx
+    jz .n
+    inc cx
+    call pnp_hex3
+    mov al, '-'
+    call putc
+    mov ax, [gs:si]
+    add ax, dx
+    dec ax
+    call pnp_hex3
+    mov al, ' '
+    call putc
+    mov al, ' '
+    call putc
+.n:
+    add si, 3
+    cmp si, V_PNIO1 + 6
+    jb .r
+    test cx, cx
+    jnz .x
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "none"
+    mov byte [gs:V_ATTR], A_VALUE
+.x:
+    ret
+
+page_pnp:                           ; Tools P
+    call pn_load
+    mov si, s_none
+.draw:
+    push si
+    mov si, t_pnp
+    mov bx, h_pnp
+    call frame
+    mov dh, 5
+    mov si, l_pncfg
+    call label
+    test byte [gs:V_PNF], 1
+    jnz .off
+    SAY "on"
+    jmp short .k1
+.off:
+    mov byte [gs:V_ATTR], A_BAD
+    SAY "off"
+    mov byte [gs:V_ATTR], A_VALUE
+.k1:
+    mov dh, 6
+    mov si, l_pnirq
+    call label
+    call pnp_listirq
+    mov dh, 7
+    mov si, l_pndma
+    call label
+    call pnp_listdma
+    mov dh, 8
+    mov si, l_pnio
+    call label
+    call pnp_listio
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0903
+    call goto_rc
+    SAY "Kept free = used by non-PnP cards (e.g. a PicoMEM, a jumpered network card)."
+    push fs
+    push PNPSEG
+    pop fs
+    mov dx, 0x0B03
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "This boot: "
+    mov byte [gs:V_ATTR], A_VALUE
+    call pnp_status
+    mov dh, 12
+    xor cx, cx                      ; cards and their devices
+.card:
+    cmp cl, [fs:P_NCARD]
+    jae .cards
+    cmp byte [fs:P_STAT], 3
+    jne .cards
+    inc dh
+    mov dl, 3
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "Card "
+    movzx eax, cl
+    inc eax
+    call putdec
+    SAY "  "
+    mov byte [gs:V_ATTR], A_VALUE
+    movzx si, cl
+    imul si, si, 48
+    add si, P_CARDS
+    mov eax, [fs:si]
+    push si
+    add si, 8
+    cmp byte [fs:si], 0
+    je .noname
+    call pnp_puts_fs
+    SAY "  ("
+    call pnp_putid
+    mov al, ')'
+    call putc
+    jmp short .named
+.noname:
+    call pnp_putid
+.named:
+    pop si
+    xor bx, bx                      ; this card's devices
+    mov bx, P_LDS
+    xor di, di
+.ld:
+    mov ax, di
+    cmp al, [fs:P_NLD]
+    jae .nextcard
+    cmp [fs:bx], cl
+    jne .nl
+    cmp dh, 20
+    jae .nl
+    inc dh
+    mov dl, 6
+    call goto_rc
+    push cx
+    push di
+    call pnp_ldline
+    pop di
+    pop cx
+.nl:
+    add bx, LD_SIZE
+    inc di
+    jmp short .ld
+.nextcard:
+    inc cx
+    jmp .card
+.cards:
+    mov dx, 0x1503
+    call goto_rc
+    call pnp_blaster
+    jc .nb
+    mov byte [gs:V_ATTR], A_DIM
+    SAY "   (for DOS: AUTOEXEC.BAT)"
+.nb:
+    pop fs
+    pop si
+    mov dx, 0x1603
+    call goto_rc
+    mov byte [gs:V_ATTR], A_OK
+    call puts
+.key:
+    call getkey
+    mov si, s_none
+    cmp ah, 0x01
+    je .x
+    or al, 0x20
+    cmp al, 'c'
+    je .toggle
+    cmp al, 'i'
+    je .irq
+    cmp al, 'm'
+    je .dma
+    cmp al, '1'
+    je .io1
+    cmp al, '2'
+    je .io2
+    cmp al, 's'
+    je .save
+    cmp al, 'r'
+    je .run
+    jmp short .key
+.toggle:
+    xor byte [gs:V_PNF], 1
+    jmp .draw
+.irq:
+    call .prompt
+    SAY "IRQ to keep free (or free again), 0-15: "
+    mov bx, 0x020A
+    mov dx, 15
+    call getval
+    jc .draw
+    mov cx, ax
+    btc word [gs:V_PNIRQ], cx
+    jmp .draw
+.dma:
+    call .prompt
+    SAY "DMA channel to keep free (or free again), 0-7: "
+    mov bx, 0x010A
+    mov dx, 7
+    call getval
+    jc .draw
+    mov cx, ax
+    btc word [gs:V_PNDMA], cx       ; (only bits 0-7)
+    jmp .draw
+.io1:
+    mov di, V_PNIO1
+    jmp short .io
+.io2:
+    mov di, V_PNIO1 + 3
+.io:
+    call .prompt
+    SAY "I/O base in hex (0 = none): "
+    mov bx, 0x0310
+    mov dx, 0x3FF
+    call getval
+    jc .draw
+    mov [gs:di], ax
+    mov byte [gs:di + 2], 0
+    test ax, ax
+    jz .draw
+    SAY "   ports in hex (1-FF): "
+    mov bx, 0x0210
+    mov dx, 0xFF
+    call getval
+    jc .draw
+    mov [gs:di + 2], al
+    jmp .draw
+.save:
+    call pn_save
+    mov si, s_pnsaved
+    jmp .draw
+.run:
+    test byte [gs:V_PNF], 1
+    jnz .draw
+    call pnp_run
+    mov si, s_pnran
+    jmp .draw
+.x:
+    clc
+    ret
+.prompt:
+    mov dx, 0x1603
+    mov cx, 76
+    mov byte [gs:V_ATTR], A_BG
+    mov al, ' '
+    call hline
+    mov dx, 0x1603
+    call goto_rc
+    mov byte [gs:V_ATTR], A_VALUE
+    ret
+
+pnp_puts_fs:                        ; FS:SI, zero-terminated
+    push ax
+    push si
+.l:
+    mov al, [fs:si]
+    test al, al
+    jz .x
+    call putc
+    inc si
+    jmp short .l
+.x:
+    pop si
+    pop ax
+    ret
+
+t_pnp:      db "Plug and Play cards (ISA)", 0
+h_pnp:      db "C On/off  I IRQ  M DMA  1/2 I/O range  S Save  R Configure now  Esc Back", 0
+l_pncfg:    db "Configure at boot", 0
+l_pnirq:    db "Kept free: IRQ", 0
+l_pndma:    db "Kept free: DMA", 0
+l_pnio:     db "Kept free: I/O", 0
+s_pnsaved:  db "Saved: used from the next boot (R configures the cards now).", 0
+s_pnran:    db "Cards configured again with these settings.", 0
 
 ; ------------------------------------------------------------------ chipset settings
 ; The UMC 82C480's timing options, decoded from an AMI BIOS for another
@@ -3586,6 +5232,7 @@ h_boot: db "1-4 Choose   O Normal boot order   Esc Continue", 0
 capture_entry:                      ; far, end of POST
     ENTER
     call chip_apply                 ; saved chipset settings
+    call pnp_boot                   ; ISA Plug and Play cards
     call capture19
     LEAVE
     retf
@@ -6204,6 +7851,10 @@ page_summary:
     mov si, l_ctime
     call label
     call cs_status
+    mov dh, 20
+    mov si, l_pnp
+    call label
+    call pnp_status
     ; footer and a 3 second wait (any key ends it; the key is left for POST)
     mov byte [gs:V_ATTR], A_BAR
     mov dx, 0x1800
@@ -6278,6 +7929,7 @@ page_summary:
 l_mem: db "Memory", 0
 l_order: db "Boot order", 0
 l_ctime: db "Chipset timing", 0
+l_pnp: db "Plug and Play", 0
 l_cache: db "Level 1 cache", 0
 
 align 2, db 0                       ; the checksum covers whole words

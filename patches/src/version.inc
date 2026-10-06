@@ -6,7 +6,7 @@
 ; (E800:0008). The NCR BIOS's own version (2.03.00) and date (10/08/93 at
 ; F000:FFF5) are never changed: DOS-era software reads them.
 
-%define ED_VERSION "1.3"
-%define ED_DATE    "2026-10-05"
+%define ED_VERSION "1.4"
+%define ED_DATE    "2026-10-06"
 ED_MAJOR    equ 1
-ED_MINOR    equ 3
+ED_MINOR    equ 4

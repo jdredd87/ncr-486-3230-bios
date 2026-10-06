@@ -4,6 +4,12 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.4 (2026-10-06)
+
+- New: **ISA Plug and Play**. At the end of POST the BIOS finds ISA PnP cards, chooses non-conflicting I/O, IRQ and DMA for each logical device (preferred resource set first, then the alternatives), and activates them. An AWE64 is ready for DOS without CTCM.
+- New: Tools → P **Plug and Play cards**: the cards and what each device got, the `SET BLASTER=` line for Creative cards, on/off, IRQs/DMA/I/O ranges kept free for non-PnP cards (CMOS 54h–5Fh), and R to configure again. The summary shows a Plug and Play line.
+- Emulator: an ISA PnP card model (key, isolation with arbitration, resource data, registers); tests with AWE64-style, modem and conflicting cards (`tests/test_pnp.py`).
+
 ## 1.3 (2026-10-05)
 
 - The chipset is identified: **UMC 82C480** (UM82C481BF, UM82C482AF, UM82C206F; SMC FDC37C661 for the I/O ports). Its registers are decoded from an AMI BIOS for another UMC 480 board; see [docs/chipset-umc480.md](docs/chipset-umc480.md).

@@ -91,8 +91,12 @@ def summary_screen():
     return m
 
 
-def tools_screen(keys, page=0, big_disk=False, rom_hook=False):
+def tools_screen(keys, page=0, big_disk=False, rom_hook=False, pnp=False):
     m = th.machine(flag=0xA5)
+    if pnp:                                          # an AWE64, configured at the end of POST
+        import pnptools
+        m.pnp.cards = [pnptools.awe64()]
+        m.near_call(0xF000, th.G_BASE + 3, max_insns=600_000_000, ss=0, sp=0x0400)
     if big_disk:                                     # POST disk init + LBA set-up, 2 GB disk
         m.ide = IdeChannel(m, AtaDisk(4092, 16, 63, "QUANTUM FIREBALL 2.1GB"),
                            Atapi(model="TOSHIBA CD-ROM XM-5302TA"))
@@ -122,6 +126,7 @@ def main():
         ("Boot order editor (F8, then O)", tools_screen([th.key("o")], page=1, rom_hook=True)),
         ("Tools: Chipset settings", tools_screen([th.key("9")])),
         ("Tools: Chipset registers (from the settings, R)", tools_screen([th.key("9"), th.key("r")])),
+        ("Tools: Plug and Play cards, with an AWE64", tools_screen([th.key("p")], pnp=True)),
     ]
     html = ['<!doctype html><meta charset="utf-8"><title>NCR 3230 BIOS preview</title>',
             '<style>body{background:#222;color:#ddd;font:14px system-ui;margin:16px}'

@@ -389,6 +389,150 @@ class IdeChannel:
         self.irq()
 
 
+
+# ----------------------------------------------------------------- ISA Plug and Play (PnP ISA 1.0a)
+
+def pnp_key():
+    """The 32-byte initiation key (after two writes of 0)."""
+    code, out = 0x6A, []
+    for _ in range(32):
+        out.append(code)
+        code = (code >> 1) | ((((code & 1) ^ ((code >> 1) & 1))) << 7)
+    return out
+
+
+def pnp_checksum(ident8):
+    c = 0x6A
+    for i in range(64):
+        bit = (ident8[i // 8] >> (i % 8)) & 1
+        c = ((((c ^ (c >> 1)) & 1) ^ bit) << 7) | (c >> 1)
+    return c
+
+
+def eisa_id(text):
+    """'CTL0045' -> 4 bytes as stored in PnP data."""
+    a, b, c = (ord(ch) - 0x40 for ch in text[:3])
+    prod = int(text[3:], 16)
+    return bytes([(a << 2) | (b >> 3), ((b & 7) << 5) | c, prod >> 8, prod & 0xFF])
+
+
+class IsaPnpCard:
+    """One ISA PnP card: serial identifier, resource data, per-device registers."""
+
+    def __init__(self, vendor_id, serial, resources):
+        ident = eisa_id(vendor_id) + struct.pack("<I", serial)
+        self.ident = ident + bytes([pnp_checksum(ident)])
+        self.resources = bytes(resources)
+        self.state = "wfk"
+        self.csn = 0
+        self.ldn = 0
+        self.regs = {}                               # (ldn, reg) -> value
+        self.ptr = 0
+        self.bit = 0
+        self.isolated = False
+
+    def ld(self, n):
+        return {r: v for (l, r), v in self.regs.items() if l == n}
+
+
+class IsaPnpBus:
+    KEY = pnp_key()
+
+    def __init__(self):
+        self.cards = []
+        self.addr = 0
+        self.keypos = 0
+        self.rdp = None
+        self.pair = 0                                # isolation: first or second read of a pair
+        self.drive = False
+        self.log = []
+
+    def write_addr(self, v):
+        self.addr = v
+        if v == self.KEY[self.keypos]:
+            self.keypos += 1
+            if self.keypos == 32:
+                self.keypos = 0
+                for c in self.cards:
+                    if c.state == "wfk":
+                        c.state = "sleep"
+        else:
+            self.keypos = 1 if v == self.KEY[0] else 0
+        if v == 0x01:                                # serial isolation starts a fresh pair
+            self.pair = 0
+
+    def write_data(self, v):
+        r = self.addr
+        self.log.append(("w", r, v))
+        live = [c for c in self.cards if c.state != "wfk"]
+        if r == 0x00:
+            self.rdp = (v << 2) | 3
+        elif r == 0x02:
+            for c in live:
+                if v & 1:
+                    c.regs.clear()
+                if v & 4:
+                    c.csn = 0
+                if v & 2:
+                    c.state = "wfk"
+        elif r == 0x03:
+            for c in live:
+                if c.csn == v:
+                    c.state = "iso" if v == 0 else "cfg"
+                    c.ptr, c.bit, c.isolated = 0, 0, False
+                else:
+                    c.state = "sleep"
+            self.pair = 0
+        elif r == 0x06:
+            for c in live:
+                if c.state == "iso" and c.isolated:
+                    c.csn, c.state = v, "cfg"
+        elif r == 0x07:
+            for c in live:
+                if c.state == "cfg":
+                    c.ldn = v
+        elif r >= 0x30:
+            for c in live:
+                if c.state == "cfg":
+                    c.regs[(c.ldn, r)] = v
+
+    def read(self):
+        r = self.addr
+        iso = [c for c in self.cards if c.state == "iso" and not c.isolated]
+        if r == 0x01:
+            if not iso:
+                return 0xFF
+            if self.pair == 0:
+                bits = [(c.ident[c.bit // 8] >> (c.bit % 8)) & 1 for c in iso]
+                self.drive = any(bits)
+                for c, b in zip(iso, bits):
+                    if self.drive and not b:
+                        c.state = "sleep"            # lost the arbitration
+                self.pair = 1
+                return 0x55 if self.drive else 0xFF
+            self.pair = 0
+            for c in iso:
+                c.bit += 1
+                if c.bit >= 72:
+                    c.isolated = True
+            return 0xAA if self.drive else 0xFF
+        cfg = [c for c in self.cards if c.state == "cfg"]
+        if not cfg:
+            return 0xFF
+        c = cfg[0]
+        if r == 0x04:
+            data = c.ident + c.resources
+            v = data[c.ptr] if c.ptr < len(data) else 0xFF
+            c.ptr += 1
+            return v
+        if r == 0x05:
+            return 0x01
+        if r == 0x06:
+            return c.csn
+        if r == 0x07:
+            return c.ldn
+        return c.regs.get((c.ldn, r), 0)
+
 # ----------------------------------------------------------------- machine
 
 class Machine:
@@ -406,6 +550,7 @@ class Machine:
         self.chipset = {0x9B: 0x01}
         self.chip_index = 0
         self.ide = IdeChannel(self)
+        self.pnp = IsaPnpBus()
         self.port80 = []
         self.ports_log = []
         self.log_ports = False
@@ -502,6 +647,8 @@ class Machine:
             return self.chipset.get(self.chip_index, 0)
         if 0x1F0 <= port <= 0x1F7 or port == 0x3F6:
             return self.ide.inp(port, size)
+        if self.pnp.rdp is not None and port == self.pnp.rdp and self.pnp.cards:
+            return self.pnp.read()
         if port in (0x40, 0x41, 0x42):
             self.pit = (self.pit - 37) & 0xFFFF
             return self.pit & 0xFF
@@ -529,6 +676,10 @@ class Machine:
             self.port80.append(value & 0xFF)
         elif 0x1F0 <= port <= 0x1F7 or port == 0x3F6:
             self.ide.outp(port, size, value)
+        elif port == 0x279:
+            self.pnp.write_addr(value & 0xFF)
+        elif port == 0xA79:
+            self.pnp.write_data(value & 0xFF)
 
     def _romwrite(self, uc, access, address, size, value, user):
         self.rom_writes.append((address, size, value, self.chipset.get(0x9B, 0) & 1))

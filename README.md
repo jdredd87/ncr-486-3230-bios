@@ -3,7 +3,7 @@
 Reverse-engineering, fixes and new features for the system BIOS of the **NCR System 3230** (486, BIOS 517-0000672 v2.03.00, chip U19, dated 10/08/93).
 
 - **`NCR-BIOS-517-0000672-VER2.03.00-U19.BIN`** is the original ROM dump. It is never modified.
-- **`build/NCR3230-203-improved.BIN`** is the improved ROM, **Enhanced Edition 1.3**, ready to program into a chip. See [CHANGELOG.md](CHANGELOG.md) for what each version contains.
+- **`build/NCR3230-203-improved.BIN`** is the improved ROM, **Enhanced Edition 1.4**, ready to program into a chip. See [CHANGELOG.md](CHANGELOG.md) for what each version contains.
 - **`userhdd/dos/userhdd.exe`** replaces NCR's lost USERHDD.EXE. It is needed only with the original ROM.
 
 ## What the improved ROM does
@@ -15,7 +15,8 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 - An end-of-POST **system summary**: processor and measured clock, memory, caches, drives, ports and video. It shows for 8 s with a countdown; Space holds it.
 - **F8 boot menu**: boot once from A:, C:, the **CD-ROM**, or an option ROM such as the PicoMEM.
 - **Saved boot order**, as on later BIOSes: up to four devices (A:, C:, CD-ROM, option ROM), tried in order at every boot. Missing or unbootable devices are skipped.
-- **F10 Tools**: system information, drives, memory map, memory test, CMOS viewer, NCR's floppy drive test, **Hard disk setup**, the boot menu, and **chipset settings** (memory and bus timing) with a register viewer.
+- **F10 Tools**: system information, drives, memory map, memory test, CMOS viewer, NCR's floppy drive test, **Hard disk setup**, the boot menu, **chipset settings** (memory and bus timing) with a register viewer, and **Plug and Play cards**.
+- **ISA Plug and Play**: PnP cards such as a Sound Blaster AWE64 are found and configured at boot, so DOS can use them without CTCM or ICU.
 
 **Hard disks**
 - **Automatic** by default: IDE disks are detected at every boot, even with no battery.
@@ -41,7 +42,7 @@ Reverse-engineering, fixes and new features for the system BIOS of the **NCR Sys
 | `fancy_boot` | The blue boot screen, coloured messages and credits. Setup's F2 screen gains "Fancy Boot Screen" (F3 toggles it, stored in CMOS 48h). With it off, POST looks exactly as before. |
 | `tools_rom` | Everything in the chip's unused 32 KB (E800:0000): the Tools menu, boot menu, summary and chime, measured "PROCESSOR SPEED", CD-ROM boot, saved boot order, large-disk mode, option-ROM boot control. If that area is missing or damaged (signature and checksum are checked), all of it switches off and the rest still works. |
 
-Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 334 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
+Each patch is NASM source in `patches/src/` that checks the original bytes it replaces. They are tested by running the real ROM code in an emulator, original against improved (`python tests/run_all.py`, 359 checks). `python tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`.
 
 **Is the Tools area reachable on your board?** The boot screen shows "F1 Setup  F8 Boot menu  F10 Tools" when the BIOS can read E8000, and only "Press <F1> for SETUP" when it can't. In that case the Tools features stay off and everything else works.
 
@@ -76,6 +77,27 @@ Saved settings are applied at the end of every POST, so restart after saving, th
 **If a setting is too fast for the RAM, the machine can't lock you out:**
 - **Automatic fail-safe:** if a boot with new settings never gets to booting or to Tools, the next boot skips them and Tools says so. They stay off until you save them again.
 - **Manual skip:** holding **Shift** while POST finishes skips them for that boot.
+
+### Plug and Play cards (Tools → P)
+
+The 1993 BIOS predates Plug and Play, so ISA PnP cards (Sound Blaster AWE32/AWE64/SB16 PnP, PnP network and modem cards) used to come up switched off, and DOS needed Creative's CTCM or Intel's ICU to use them. Now, at the end of POST, the BIOS:
+
+1. finds the cards (the PnP ISA 1.0a isolation protocol), up to four of them;
+2. reads what each part of a card can use;
+3. gives each part an I/O address, IRQ and DMA channel that don't clash with the motherboard (serial and parallel ports, floppy, IDE, video, PS/2 mouse) or with anything you've set aside;
+4. switches them on.
+
+An AWE64 comes up as A220 I5 D1 H5 P330 E620, and the page shows the matching `SET BLASTER=` line for AUTOEXEC.BAT. Windows 95/98 and CTCM can still reconfigure the cards afterwards.
+
+| Key | Does |
+|---|---|
+| C | Configure at boot on/off |
+| I / M | Keep an IRQ / DMA channel free for a non-PnP card (type the number; typing it again frees it) |
+| 1 / 2 | Keep an I/O range free (base and length in hex), e.g. for a PicoMEM or a jumpered network card |
+| S | Save (CMOS 54h–5Fh) |
+| R | Configure the cards again now, with these settings |
+
+Holding Shift while POST finishes skips it once.
 
 ### Boot menu (F8)
 
@@ -173,13 +195,13 @@ The ROM area E8000–EFFFF holds code that runs after boot: large-disk mode and 
 
 1. Read the original chip with your programmer. Its SHA-256 must be `f634b7b83cb80fe6f9a6ba17fb40eb79695cce652a6b99e1b5f72ad1b3098e03`. That proves this dump is exact.
 2. Program the **original** image into the new chip first and check that it boots. That proves the chip type and programming.
-3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `ed4c7e1babd6fe15db75282793e82a9f1c0c0830ac56fac41f005ec79c56ee51`.
+3. Then program `build/NCR3230-203-improved.BIN`, keeping the original chip as a fallback. SHA-256: `db301855e3a9424054c901a82964d6a1e2062d4104dc8bce7b215fca36af2b09`.
 
 The BIOS has no flash-writing code, so plan on an external programmer.
 
 ### Which version is in the chip?
 
-The version shows on the boot screen ("Enhanced Edition 1.3"), in the end-of-POST summary, on Setup's title line, and in Tools → System information, with its release date. To make a new version, change `patches/src/version.inc`, add an entry to [CHANGELOG.md](CHANGELOG.md), rebuild, and tag the commit (`git tag v1.1`). The build prints the version with the SHA-256. The NCR BIOS's own version (2.03.00) and date (10/08/93) stay as they are, because DOS-era software reads them.
+The version shows on the boot screen ("Enhanced Edition 1.4"), in the end-of-POST summary, on Setup's title line, and in Tools → System information, with its release date. To make a new version, change `patches/src/version.inc`, add an entry to [CHANGELOG.md](CHANGELOG.md), rebuild, and tag the commit (`git tag v1.1`). The build prints the version with the SHA-256. The NCR BIOS's own version (2.03.00) and date (10/08/93) stay as they are, because DOS-era software reads them.
 
 ## USERHDD.EXE
 
