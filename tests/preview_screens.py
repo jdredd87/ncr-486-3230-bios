@@ -20,7 +20,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-from emu import AtaDisk, Atapi, IdeChannel, Machine, StopEmu, cmos_checksum  # noqa: E402
+from emu import AtaDisk, Atapi, CirrusVga, IdeChannel, Machine, StopEmu, cmos_checksum  # noqa: E402
 
 sys.path.insert(0, HERE)
 import tools_harness as th  # noqa: E402
@@ -83,6 +83,7 @@ def setup_screen(keys):
 
 def summary_screen():
     m = th.machine(master="disk", slave="cdrom")
+    m.vga = CirrusVga()                              # a CL-GD5426 with 1 MB
     m.keys = [0x3920, 0x1C0D]                        # Space holds it, Enter ends it
     try:
         m.near_call(0xF000, th.G_BASE + 3, max_insns=200_000_000, ss=0, sp=0x0400)
@@ -93,6 +94,7 @@ def summary_screen():
 
 def tools_screen(keys, page=0, big_disk=False, rom_hook=False, pnp=False):
     m = th.machine(flag=0xA5)
+    m.vga = CirrusVga()
     if pnp:                                          # an AWE64, configured at the end of POST
         import pnptools
         m.pnp.cards = [pnptools.awe64()]

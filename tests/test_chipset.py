@@ -5,7 +5,9 @@
 The settings page (Tools 9), what it saves in CMOS 4Eh-52h, how the end of
 POST writes the saved values into the chipset registers, and the fail-safe:
 a boot that never reaches INT 19h or Tools makes the next boot skip them,
-and a held Shift key skips them once.
+and a held Shift key skips them once. Also the Cirrus Logic video memory
+clock on the same page (CMOS 53h, SR1F), the real VGA BIOS's own handling
+of that clock, and the Video line naming the chip and its memory.
 """
 import os
 import struct
@@ -15,6 +17,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from tools_harness import ESC, G_BASE, StopEmu, key, machine, run_tools  # noqa: E402
+from emu import CirrusVga  # noqa: E402
 
 if len(sys.argv) <= 1:
     subprocess.check_call([sys.executable, os.path.join(HERE, "..", "tools", "build_rom.py"), "--all"],
@@ -151,6 +154,109 @@ save(m, 2, 1, 0x8E)
 m.cmos[0x50] ^= 0x01                                      # damaged: the check byte fails
 postend(m)
 check(m.chipset[0x91] == 0x0A, "damaged saved settings are ignored")
+
+# ---------------------------------------------------------------- video memory clock (Cirrus GD542x)
+def cirrus(m, **kw):
+    m.vga = CirrusVga(**kw)
+    return m.vga
+
+
+def mclk_saved(m):
+    v = m.cmos[0x53]
+    return v & 0x0F if v >> 4 == (v & 0x0F) ^ 0x0F else None
+
+
+m = setup()
+v = cirrus(m)
+run_tools(m, [key("9")])
+r = m.screen_text().splitlines()[13]
+check("Video memory clock" in r and "VGA BIOS's (50.1 MHz)" in r and "50.1 MHz" in r.split(")")[-1],
+      "page: video memory clock row, the VGA BIOS's 50.1 MHz, read from the chip (%r)" % r.strip())
+m = setup()
+v = cirrus(m)
+run_tools(m, [key("9")] + [DOWN] * 6 + [RIGHT, RIGHT, RIGHT, key("s")])
+check(mclk_saved(m) == 3 and saved(m) is not None, "page: 57.3 MHz saved to CMOS 53h with the chipset block")
+postend(m)
+check(v.sr[0x1F] == 0x20 and m.cmos[0x52] == ord("P"), "end of POST: SR1F = 20h (57.3 MHz), under the fail-safe")
+run_tools(m, [key("9")])
+r = m.screen_text().splitlines()[13]
+check("57.3 MHz" in r and r.count("57.3 MHz") == 2, "page: setting and chip both show 57.3 MHz")
+m = setup()
+v = cirrus(m, mclk=0x5C)                                    # bit 6 set: must survive
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x5 | (0x5 ^ 0xF) << 4
+postend(m)
+check(v.sr[0x1F] == 0x62, "end of POST: 60.9 MHz written, bits 7-6 kept (SR1F=%02X)" % v.sr[0x1F])
+m = setup()
+v = cirrus(m, unlocked=False)
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x2 | (0x2 ^ 0xF) << 4
+postend(m)
+check(v.sr[0x1F] == 0x1F and v.sr[0x06] == 0x0F, "locked extensions: unlocked to write SR1F, locked again")
+m = setup()
+v = cirrus(m)
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x22                                         # not a valid choice byte
+postend(m)
+check(v.sr[0x1F] == 0x1C and not [w for w in v.sr_writes if w[0] == 0x1F], "damaged CMOS 53h: the clock is left alone")
+m = setup()
+v = cirrus(m)
+m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4                       # without a chipset block: not used
+postend(m)
+check(v.sr[0x1F] == 0x1C, "CMOS 53h alone (no saved chipset block): not applied")
+m = setup()
+v = cirrus(m)
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+m.write(0x417, bytes([0x02]))
+postend(m)
+check(v.sr[0x1F] == 0x1C, "Shift held: the video clock is skipped too")
+m = setup()
+v = cirrus(m)
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+run_tools(m, [key("9"), key("d")])
+check(m.cmos[0x53] == 0 and saved(m) is None, "page: D clears the video clock with the rest")
+m = setup()
+run_tools(m, [key("9")])
+check("no Cirrus chip" in m.screen_text().splitlines()[13], "no Cirrus chip: the row says so")
+save(m, 0, 0, 0x0A)
+m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+postend(m)
+check(m.cmos[0x52] == ord("P"), "no Cirrus chip: the rest of the settings still apply")
+
+m = setup()
+v = cirrus(m)
+m.stubs.pop(0x10)                                           # the real VGA BIOS's INT 10h
+m.far_call(0xE000, 0x0003, max_insns=50_000_000)            # its start-up
+starts = [w for w in v.sr_writes if w[0] == 0x1F]
+v.sr[0x1F] = 0x20                                           # as the end of POST leaves it
+for mode in (0x03, 0x13, 0x5F, 0x03):
+    m.int_call(0x10, ax=mode, max_insns=50_000_000)
+m.int_call(0x10, ax=0x4F02, bx=0x101, max_insns=50_000_000)
+check(starts == [(0x1F, 0x1C)] and v.sr[0x1F] == 0x20,
+      "VGA BIOS: sets 1Ch (50.1 MHz) once at start-up; mode sets and VESA modes keep a later value")
+
+# ---------------------------------------------------------------- the chip named
+for cid, name, mem, mtxt in ((0x90, "CL-GD5426", 2, "1 MB"), (0x94, "CL-GD5424", 1, "512 KB"),
+                             (0x8C, "CL-GD5422", 2, "1 MB"), (0x98, "CL-GD5428", 3, "2 MB")):
+    m = setup()
+    cirrus(m, chip_id=cid | 1, mem_code=mem)                # low bits: revision, ignored
+    run_tools(m, [key("1")])
+    check("Cirrus %s, %s, BIOS at" % (name, mtxt) in m.screen_text(),
+          "System information: Video names the %s with %s" % (name, mtxt))
+m = setup()
+cirrus(m, chip_id=0xB8)
+run_tools(m, [key("1")])
+check("Cirrus CL-GD54xx, 1 MB" in m.screen_text(), "an unknown Cirrus ID: CL-GD54xx")
+m = setup()
+run_tools(m, [key("1")])
+check("VGA colour, BIOS at" in m.screen_text(), "no Cirrus chip: Video line as before")
+m = setup(flag=0x00)
+cirrus(m)
+m.keys = [0x1C0D]
+postend(m)
+check("Video                 Cirrus CL-GD5426, 1 MB, BIOS at" in m.screen_text(), "summary: names the video chip")
 
 print("\n%d failed" % len(failed) if failed else "\nall passed")
 sys.exit(1 if failed else 0)

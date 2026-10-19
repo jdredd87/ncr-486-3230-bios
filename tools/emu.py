@@ -11,6 +11,9 @@ simulated hardware, so patches can be tested before a chip is flashed:
     PACKET READ(10)/READ CAPACITY/TEST UNIT READY/REQUEST SENSE).
     IRQ 14 is modelled by setting the BIOS "interrupt received" flag 40:8E.
   * Timer (PIT) and port 61h refresh toggle so delay loops terminate.
+  * Optionally (m.vga = CirrusVga(...)) a Cirrus Logic GD542x's extended
+    registers: sequencer 3C4h/3C5h with the SR6 unlock, CRTC 3D4h/3D5h with
+    the chip ID in CR27, and misc output 3CCh.
   * Software interrupts are dispatched through the emulated IVT, except
     vectors given Python stubs (INT 10h teletype capture, INT 16h keys, ...).
 
@@ -435,6 +438,66 @@ class IsaPnpCard:
         return {r: v for (l, r), v in self.regs.items() if l == n}
 
 
+class CirrusVga:
+    """The extended registers of a Cirrus Logic CL-GD542x, as the BIOS sees them.
+
+    Sequencer registers answer only while SR6 = 12h (other values lock them;
+    a locked SR6 reads 0Fh). SR1F is the memory clock, SR0A bits 4-3 the
+    memory size code the VGA BIOS stores, CR27 the chip ID."""
+
+    def __init__(self, chip_id=0x90, mem_code=2, mclk=0x1C, unlocked=True):
+        self.sr = {0x06: 0x12 if unlocked else 0x0F, 0x0A: mem_code << 3, 0x1F: mclk}
+        self.cr = {0x27: chip_id}
+        self.si = 0
+        self.ci = 0
+        self.status = 0
+        self.sr_writes = []
+
+    def inp(self, port):
+        if port == 0x3C4:
+            return self.si
+        if port == 0x3C5:
+            if self.si == 0x06:
+                return self.sr[0x06]
+            if self.sr[0x06] != 0x12 and self.si >= 0x07:
+                return 0xFF
+            return self.sr.get(self.si, 0)
+        if port == 0x3CC:
+            return 0x67                              # colour: CRTC at 3D4h
+        if port == 0x3D4:
+            return self.ci
+        if port == 0x3D5:
+            return self.cr.get(self.ci, 0)
+        if port == 0x3DA:                            # input status 1: retrace bits toggle
+            self.status ^= 0x09
+            return self.status
+        return None
+
+    def outp(self, port, size, value):
+        if port == 0x3C4:
+            self.si = value & 0xFF
+            if size == 2:
+                self._sr(value >> 8)
+        elif port == 0x3C5:
+            self._sr(value & 0xFF)
+        elif port == 0x3D4:
+            self.ci = value & 0xFF
+            if size == 2:
+                self.cr[self.ci] = (value >> 8) & 0xFF
+        elif port == 0x3D5:
+            self.cr[self.ci] = value & 0xFF
+        else:
+            return False
+        return True
+
+    def _sr(self, value):
+        self.sr_writes.append((self.si, value))
+        if self.si == 0x06:
+            self.sr[0x06] = 0x12 if value == 0x12 else 0x0F
+        elif self.sr[0x06] == 0x12 or self.si < 0x07:
+            self.sr[self.si] = value
+
+
 class IsaPnpBus:
     KEY = pnp_key()
 
@@ -551,6 +614,7 @@ class Machine:
         self.chip_index = 0
         self.ide = IdeChannel(self)
         self.pnp = IsaPnpBus()
+        self.vga = None
         self.port80 = []
         self.ports_log = []
         self.log_ports = False
@@ -649,6 +713,10 @@ class Machine:
             return self.ide.inp(port, size)
         if self.pnp.rdp is not None and port == self.pnp.rdp and self.pnp.cards:
             return self.pnp.read()
+        if self.vga is not None:
+            v = self.vga.inp(port)
+            if v is not None:
+                return v
         if port in (0x40, 0x41, 0x42):
             self.pit = (self.pit - 37) & 0xFFFF
             return self.pit & 0xFF
@@ -680,6 +748,8 @@ class Machine:
             self.pnp.write_addr(value & 0xFF)
         elif port == 0xA79:
             self.pnp.write_data(value & 0xFF)
+        elif self.vga is not None:
+            self.vga.outp(port, size, value)
 
     def _romwrite(self, uc, access, address, size, value, user):
         self.rom_writes.append((address, size, value, self.chipset.get(0x9B, 0) & 1))

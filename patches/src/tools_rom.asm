@@ -348,7 +348,8 @@ V_CSTAT     equ 0x184               ; chipset settings this boot (see chip_apply
 V_CS81      equ 0x185               ; chipset settings: 81h bits 2-0, 82h bits 1-0, 91h
 V_CS82      equ 0x186
 V_CS91      equ 0x187
-V_CSEL      equ 0x188
+V_CSMC      equ 0x188               ; video memory clock choice (0 = the VGA BIOS's), CMOS 53h
+V_CSEL      equ 0x189
 V_PNF       equ 0x190               ; ISA PnP settings (CMOS 55h-5Eh): bit 0 = off
 V_PNIRQ     equ 0x191               ; word: IRQs kept free
 V_PNDMA     equ 0x193               ; DMA channels kept free
@@ -1249,12 +1250,15 @@ video_value:
     mov es, ax
     mov al, [es:0x49]
     pop es
+    call vga_name                   ; the Cirrus chip and its memory, if it answers
+    jnc .bios
     mov si, s_vcol
     cmp byte [gs:V_MONO], 0
     je .p
     mov si, s_vmono
 .p:
     call puts
+.bios:
     SAY ", BIOS at "
     mov ax, 0xC000
     call rom_at
@@ -3905,15 +3909,19 @@ s_pnran:    db "Cards configured again with these settings.", 0
 ;   52h = fail-safe: 'P' while a boot with the settings has not reached INT 19h
 ;         or Tools, 'F' after such a boot failed (settings then stay off until
 ;         they are saved again). Holding Shift at the end of POST skips them.
+;   53h = video memory clock: choice | (choice XOR 0Fh) << 4 (see mclk_apply),
+;         used only together with a valid 4Eh-51h block.
 
 CS_INDEX    equ 0x4E
 CS_SIG      equ 'C'
 CS_FLAG     equ 0x52
+MC_CMOS     equ 0x53
 
 ; V_CSTAT: 0 NCR defaults, 1 applied, 2 skipped (last boot failed), 3 skipped (Shift)
-cs_read:                            ; saved settings -> V_CS81/82/91. CF=1 if none (V_* = NCR's)
+cs_read:                            ; saved settings -> V_CS81/82/91/MC. CF=1 if none (V_* = NCR's)
     push ax
     push cx
+    mov byte [gs:V_CSMC], 0
     mov al, 0x81
     call chip_post
     and al, 0x07
@@ -3950,6 +3958,18 @@ cs_read:                            ; saved settings -> V_CS81/82/91. CF=1 if no
     and ah, 0x03
     mov [gs:V_CS82], ah
     mov [gs:V_CS91], ch
+    mov al, MC_CMOS
+    call cmos_read
+    mov ah, al
+    shr ah, 4
+    xor ah, 0x0F
+    and al, 0x0F
+    cmp al, ah                      ; low nibble = choice, high = its complement
+    jne .mc
+    cmp al, MC_N
+    jae .mc
+    mov [gs:V_CSMC], al
+.mc:
     clc
     jmp short .x
 .no:
@@ -3980,6 +4000,13 @@ cs_write:                           ; V_CS81/82/91 -> CMOS, and the fail-safe fl
     not ah
     mov al, CS_INDEX + 3
     call cmos_write
+    mov ah, [gs:V_CSMC]
+    mov al, ah
+    xor al, 0x0F
+    shl al, 4
+    or ah, al
+    mov al, MC_CMOS
+    call cmos_write
     call cs_flag_clear
     pop cx
     pop ax
@@ -3989,6 +4016,8 @@ cs_clear:                           ; back to NCR's values
     push ax
     mov al, CS_INDEX
     xor ah, ah
+    call cmos_write
+    mov al, MC_CMOS
     call cmos_write
     call cs_flag_clear
     pop ax
@@ -4062,6 +4091,7 @@ chip_apply:                         ; end of POST: saved settings into the chips
     mov ah, [gs:V_CS91]
     mov al, 0x91
     call chip_write
+    call mclk_apply
     mov byte [gs:V_CSTAT], 1
     ret
 
@@ -4094,9 +4124,180 @@ cs_status:                          ; one line: what the chipset settings are do
     SAY "NCR defaults"
     ret
 
+; ------------------------------------------------------------------ Cirrus Logic video
+; The CL-GD542x's memory clock (MCLK) is sequencer register 1Fh, bits 5-0:
+; MCLK = value x 14.31818 MHz / 8. The VGA BIOS (E000, v1.30) writes 1Ch
+; (50.1 MHz) once while it starts and never on a mode change, so a value
+; written at the end of POST stays. Its extended registers answer only while
+; SR6 holds 12h; the VGA BIOS leaves them unlocked, and its own check
+; (E000:0FE6) is the same read-back used here. CRTC register 27h bits 7-2 are
+; the chip ID (E000:0FF6 tells 5422, 5424 and the rest apart the same way),
+; and SR0A bits 4-3 the memory size the VGA BIOS found (E000:147A).
+
+MC_N        equ 6
+mc_vals:    db 0, 0x1E, 0x1F, 0x20, 0x21, 0x22
+
+vga_unlock:                         ; CF=0 if a Cirrus GD54xx answers; AH = SR6 as it was
+    push dx
+    mov dx, 0x3C4
+    mov al, 6
+    out dx, al
+    inc dx
+    in al, dx
+    mov ah, al
+    cmp al, 0x12
+    je .ok
+    mov al, 0x12
+    out dx, al
+    in al, dx
+    cmp al, 0x12
+    je .ok
+    mov al, ah                      ; not a Cirrus: leave the register as it was
+    out dx, al
+    stc
+    jmp short .x
+.ok:
+    clc
+.x:
+    pop dx
+    ret
+
+vga_relock:                         ; AH = SR6 from vga_unlock
+    cmp ah, 0x12
+    je .x
+    push ax
+    mov al, 6
+    call sr_write
+    pop ax
+.x:
+    ret
+
+sr_read:                            ; sequencer register AL -> AL
+    push dx
+    mov dx, 0x3C4
+    out dx, al
+    inc dx
+    in al, dx
+    pop dx
+    ret
+
+sr_write:                           ; sequencer register AL = AH
+    push dx
+    mov dx, 0x3C4
+    out dx, ax
+    pop dx
+    ret
+
+mclk_apply:                         ; end of POST: the saved video memory clock
+    push bx
+    movzx bx, byte [gs:V_CSMC]
+    test bx, bx
+    jz .x
+    call vga_unlock
+    jc .x
+    push ax
+    mov al, 0x1F
+    call sr_read
+    and al, 0xC0                    ; bits 7-6 are not the clock
+    or al, [cs:mc_vals + bx]
+    mov ah, al
+    mov al, 0x1F
+    call sr_write
+    pop ax
+    call vga_relock
+.x:
+    pop bx
+    ret
+
+mclk_now:                           ; print the video memory clock as it is now
+    call vga_unlock
+    jc .none
+    push ax
+    mov al, 0x1F
+    call sr_read
+    and eax, 0x3F
+    imul eax, eax, 179              ; x 14.31818 / 8, in hundredths
+    add eax, 5
+    xor edx, edx
+    mov ecx, 10
+    div ecx                         ; tenths
+    xor edx, edx
+    div ecx
+    call putdec
+    mov al, '.'
+    call putc
+    mov al, dl
+    add al, '0'
+    call putc
+    SAY " MHz"
+    pop ax
+    jmp vga_relock
+.none:
+    SAY "no Cirrus chip"
+    ret
+
+vga_name:                           ; print "Cirrus CL-GD5426, 1 MB"; CF=1 (nothing printed) if none
+    call vga_unlock
+    jc .x
+    push ax
+    push dx
+    SAY "Cirrus CL-GD54"
+    mov dx, 0x3CC                   ; colour or mono CRTC address
+    in al, dx
+    mov dx, 0x3D4
+    test al, 1
+    jnz .crtc
+    mov dl, 0xB4
+.crtc:
+    mov al, 0x27
+    out dx, al
+    inc dx
+    in al, dx
+    shr al, 2
+    mov si, vga_ids
+.id:
+    cmp byte [cs:si], 0
+    je .unknown
+    cmp [cs:si], al
+    je .known
+    add si, 3
+    jmp short .id
+.known:
+    mov al, [cs:si + 1]
+    call putc
+    mov al, [cs:si + 2]
+    call putc
+    jmp short .mem
+.unknown:
+    SAY "xx"
+.mem:
+    SAY ", "
+    mov al, 0x0A
+    call sr_read
+    shr al, 3
+    and al, 3
+    movzx bx, al
+    shl bx, 1
+    mov si, [cs:s_vmem + bx]
+    call puts
+    pop dx
+    pop ax
+    call vga_relock
+    clc
+.x:
+    ret
+
+vga_ids:    db 0x22, "20", 0x23, "22", 0x24, "26", 0x25, "24", 0x26, "28", 0x27, "29", 0
+s_vmem:     dw s_v256, s_v512, s_v1m, s_v2m
+s_v256:     db "256 KB", 0
+s_v512:     db "512 KB", 0
+s_v1m:      db "1 MB", 0
+s_v2m:      db "2 MB", 0
+
 ; Option table: label, variable, field mask, shift, allowed values, names by value
-CS_N        equ 6
-cs_opts:    dw cso_isa, cso_rec, cso_drd, cso_dwr, cso_l2b, cso_l2w
+; (register 0: the video memory clock, which lives in the VGA chip)
+CS_N        equ 7
+cs_opts:    dw cso_isa, cso_rec, cso_drd, cso_dwr, cso_l2b, cso_l2w, cso_mclk
 
 cso_isa:    dw s_cs_isa
             db 0, 0x07, 0, 0x81, 6, 0, 1, 2, 3, 4, 7
@@ -4116,7 +4317,17 @@ cso_l2b:    dw s_cs_l2b
 cso_l2w:    dw s_cs_l2w
             db 2, 0x30, 4, 0x91, 3, 0, 1, 2
             dw s_ws1, s_ws2, s_l2w0, s_res
+cso_mclk:   dw s_cs_mclk
+            db 3, 0x07, 0, 0, MC_N, 0, 1, 2, 3, 4, 5
+            dw s_mc0, s_mc1, s_mc2, s_mc3, s_mc4, s_mc5
 
+s_cs_mclk:  db "Video memory clock", 0
+s_mc0:      db "VGA BIOS's (50.1 MHz)", 0
+s_mc1:      db "53.7 MHz", 0
+s_mc2:      db "55.5 MHz", 0
+s_mc3:      db "57.3 MHz", 0
+s_mc4:      db "59.1 MHz", 0
+s_mc5:      db "60.9 MHz", 0
 s_cs_isa:   db "ISA bus clock", 0
 s_cs_rec:   db "I/O recovery time", 0
 s_cs_drd:   db "DRAM read wait states", 0
@@ -4250,30 +4461,37 @@ page_chipset:                       ; Tools 9: the settings; R shows the raw reg
     mov dl, 59
     call goto_rc
     mov byte [gs:V_ATTR], A_DIM
+    push cx
     mov al, [cs:si + 5]             ; the register, as it is now
+    test al, al
+    jnz .reg
+    call mclk_now
+    jmp short .now
+.reg:
     call chip_read
     call cs_extract
-    push cx
     call cs_name
+.now:
     pop cx
     inc cx
     cmp cx, CS_N
     jb .row
-    mov dx, 0x0E03
+    mov dx, 0x0F03
     call goto_rc
     mov byte [gs:V_ATTR], A_LABEL
     SAY "This boot: "
     mov byte [gs:V_ATTR], A_VALUE
     call cs_status
     mov byte [gs:V_ATTR], A_DIM
-    mov dx, 0x1003
+    mov dx, 0x1103
     call goto_rc
     SAY "Saved settings are applied at the end of every POST, so restart after S.", 3
     SAY "Faster settings need fast enough RAM: test with Tools 4 (memory test). If a", 3
     SAY "boot with them does not finish, the next boot skips them by itself, and", 3
-    SAY "holding Shift while POST ends skips them once. MHz are for a 33 MHz bus."
+    SAY "holding Shift while POST ends skips them once. ISA MHz assume a 33 MHz bus.", 3
+    SAY "Too fast a video memory clock shows as screen glitches: go one step back."
     pop si
-    mov dx, 0x1503
+    mov dx, 0x1603
     call goto_rc
     mov byte [gs:V_ATTR], A_OK
     call puts

@@ -4,6 +4,13 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.5 (2026-10-19)
+
+- New: **Video memory clock** in Tools → 9 Chipset settings, for the Cirrus Logic CL-GD542x video chip: the VGA BIOS's 50.1 MHz, or 53.7, 55.5, 57.3, 59.1 or 60.9 MHz. It is stored in CMOS 53h, applied at the end of POST with the other chipset settings, and covered by the same fail-safe and Shift skip. The row also shows the clock the chip runs at now.
+- The Video line in System information and the end-of-POST summary names the Cirrus chip and its video memory, for example "Cirrus CL-GD5426, 1 MB".
+- The VGA BIOS itself is unchanged. It sets 50.1 MHz once while it starts, and never again on a mode change, so the new value stays.
+- Emulator: a model of the Cirrus extended registers; tests run the real VGA BIOS start-up and mode sets.
+
 ## 1.4 (2026-10-06)
 
 - New: **ISA Plug and Play**. At the end of POST the BIOS finds ISA PnP cards, chooses non-conflicting I/O, IRQ and DMA for each logical device (preferred resource set first, then the alternatives), and activates them. An AWE64 is ready for DOS without CTCM.

@@ -28,6 +28,16 @@ Inside the F000 segment:
   - 93h = L2 cache size
   - 9Bh bit 0 = write-protect of the shadowed F000 BIOS. POST clears it while writing the drive table.
 
+## Video (Cirrus Logic VGA BIOS, E000)
+
+The VGA BIOS is Cirrus Logic's CL-GD5422/5424/5426/5428 BIOS v1.30 (Quadtel-based). The improved ROM leaves all 32 KB of it unchanged. Findings from its code, checked by running it in the emulator:
+
+- **VESA.** It answers VBE 1.2 (INT 10h AX=4F00h–4F08h; the info block reports version 0102h and the OEM string "Cirrus Logic GD-54xx VGA" at E000:1D96).
+- **Extended registers.** They answer only while sequencer register SR6 holds 12h. The BIOS leaves them unlocked, and its own check (E000:0FE6) reads SR6 back.
+- **Chip ID.** CRTC register 27h bits 7–2: 23h = GD5422, 25h = GD5424, 24h = GD5426, 26h = GD5428 (E000:0FF6 tells 5422 and 5424 apart from the rest, and E000:0C5C checks for 98h = GD5428). 22h (GD5420) and 27h (GD5429) come from Cirrus's register documentation, not this BIOS.
+- **Video memory.** SR0A bits 4–3, set by the BIOS: 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB (E000:147A, also behind INT 10h AH=12h BL=85h).
+- **Memory clock.** SR1F bits 5–0, MCLK = value × 14.31818 MHz / 8. The BIOS writes 1Ch (50.1 MHz) once while it starts, for every chip ID, and never on a mode change or VESA mode set. `tools_rom` can set it at the end of POST (CMOS 53h, see the chipset settings).
+
 ## POST
 
 - **POST codes** go to port 80h, and most are also echoed to the LPT1 data port (378h), so a parallel-port LED card works as a POST card.

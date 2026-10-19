@@ -1,13 +1,13 @@
 # Reworking the NCR 3230 BIOS: tools and process
 
-How the original NCR BIOS was taken apart, studied and improved, and which tools did each step. Written 2026-10-18 by StevenC & Claude, at Enhanced Edition 1.4.
+How the original NCR BIOS was taken apart, studied and improved, and which tools did each step. Written 2026-10-18 by StevenC & Claude, at Enhanced Edition 1.4; updated for 1.5.
 
 ## Overview
 
 The NCR System 3230 BIOS was never decompiled into source code and rebuilt. We disassembled the original ROM so we could read it, then wrote new code in assembly and patched it into the original image. Every byte outside the patched spots is still NCR's.
 
 - **Starting point:** NCR BIOS 517-0000672, version 2.03.00, dated 10/08/93, chip U19. It is a 128 KB image holding a Cirrus Logic VGA BIOS and NCR's system BIOS.
-- **Result:** the *Enhanced Edition*, now at version 1.4. It adds a Tools menu (F10), CD-ROM boot, a boot menu and saved boot order, large hard disks, PicoMEM handling, chipset timing settings and ISA Plug and Play.
+- **Result:** the *Enhanced Edition*, now at version 1.5. It adds a Tools menu (F10), CD-ROM boot, a boot menu and saved boot order, large hard disks, PicoMEM handling, chipset and video memory timing settings and ISA Plug and Play.
 - **Repository:** [github.com/jdredd87/ncr-486-3230-bios](https://github.com/jdredd87/ncr-486-3230-bios).
 
 Patching in place was chosen over a full rebuild for three reasons:
@@ -35,7 +35,7 @@ Everything used is free, and every project script is in the repository. No comme
 | `tools/emu.py` | project script | PC emulator: CMOS, chipset, IDE, ATAPI CD, ISA PnP, keyboard, video |
 | `tools/dosemu.py` | project script | Minimal DOS layer on top of the emulator, to run DOS EXEs |
 | `tools/version.py` | project script | Reads the Enhanced Edition version for the build and tests |
-| `tests/*.py` | project scripts | 359 checks comparing the original ROM with the improved one |
+| `tests/*.py` | project scripts | 379 checks comparing the original ROM with the improved one |
 | EPROM programmer | hardware | Reading the original chip and burning new ones |
 
 The Python libraries install with `pip install -r requirements.txt` (`capstone>=5.0`, `unicorn>=2.1`).
@@ -58,7 +58,7 @@ The system BIOS itself splits into three parts:
 - **F000:A400–DFFF:** the Setup module. It has its own `55 AA` header, is assembled at offset 0 and runs as segment FA40.
 - **F000:E000–FFFF:** the IBM PC/AT fixed entry points, the 8×8 font, vector tables, the reset vector at FFF0 and the date "10/08/93".
 
-The VGA and system BIOS were cut out into `split/` for the disassembler. Each area has an 8-bit checksum that must add up to 00h, so any change needs a correction byte fixed afterwards. `tools/fix_checksum.py` does that.
+The VGA and system BIOS were cut out into `split/` for the disassembler. The VGA BIOS has never been changed: the one video feature, a faster video memory clock (1.5), is set from the Tools extension after the VGA BIOS has started. Each area has an 8-bit checksum that must add up to 00h, so any change needs a correction byte fixed afterwards. `tools/fix_checksum.py` does that.
 
 ## Step 2: disassembling and understanding the code
 
@@ -91,12 +91,13 @@ Burning a chip for every try would be slow, and a bad ROM leaves the machine dea
 | Memory | 1 MB address space, with the 128 KB image mapped at E0000–FFFFF |
 | CMOS and clock | Ports 70h/71h with 128 bytes of CMOS RAM |
 | Chipset | Index and data ports 22h/24h, including the write-protect bit for the shadowed F000 BIOS |
+| Cirrus video chip | Extended sequencer and CRTC registers: unlock, chip ID, memory size, memory clock |
 | IDE | Master and slave: none, an ATA disk of any size, or an ATAPI CD-ROM reading an ISO file, with or without a disc |
 | Timer and refresh | PIT and port 61h, so the BIOS's delay loops finish |
 | ISA Plug and Play | Cards with the initiation key, serial isolation, resource data and configuration registers |
 | Keyboard and screen | Keys queued for INT 16h, and the text screen read back for checks |
 
-The tests in `tests/` (11 scripts, 359 checks, run with `python tests/run_all.py`) call routines in the original ROM and in the improved one and compare what happens. They check, for example, how long POST waits with a CD-ROM, what CMOS holds after a lost battery, whether a 34 GB disk reads the right sectors, or which IRQ an AWE64 gets.
+The tests in `tests/` (11 scripts, 379 checks, run with `python tests/run_all.py`) call routines in the original ROM and in the improved one and compare what happens. They check, for example, how long POST waits with a CD-ROM, what CMOS holds after a lost battery, whether a 34 GB disk reads the right sectors, or which IRQ an AWE64 gets.
 
 Two helpers build test inputs on the fly: `isotools.py` makes bootable El Torito ISO images, and `pnptools.py` makes AWE64-style and modem PnP cards. `tools/dosemu.py` adds enough DOS to run USERHDD.EXE against the emulated CMOS. `tests/preview_screens.py` renders the boot, Setup and Tools screens to `build/preview.html`, so the screens could be checked before burning.
 
@@ -163,22 +164,23 @@ One command builds the finished ROM: `python tools/build_rom.py --all`.
 3. It fixes both checksum bytes: the VGA BIOS at 07FFF and the system BIOS at F000:FFFF.
 4. It writes `build/NCR3230-203-improved.BIN` and prints the Enhanced Edition version and the image's SHA-256.
 
-`python tests/run_all.py` runs the build and then all 359 checks. A version is burned only when every check passes.
+`python tests/run_all.py` runs the build and then all 379 checks. A version is burned only when every check passes.
 
 The BIOS has no flash-writing code, so chips are programmed with an external EPROM programmer, in this order:
 
 1. Read the original chip and confirm the dump's SHA-256 (`f634b7b8…`), so the dump is known to be exact.
 2. Program the original image into a new chip and boot it. That proves the chip type and the programmer.
-3. Program the improved image, keeping the original chip as a fallback. Version 1.4's SHA-256 is `db301855e3a9424054c901a82964d6a1e2062d4104dc8bce7b215fca36af2b09`.
+3. Program the improved image, keeping the original chip as a fallback. Version 1.5's SHA-256 is `e4679e9cd0f94807abfc8c4c6d088b0e79bee2c1e6529380d98e131f290e2acf`.
 
 The version lives in one file, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information, and is stored at E800:0008. Each burned version gets a [CHANGELOG.md](../CHANGELOG.md) entry and a git tag. NCR's own version (2.03.00) and date (10/08/93) are never changed, because DOS-era software reads them.
 
 ## What was built from there
 
-The work ran from 2026-09-30 to 2026-10-06: fixes first, then the Tools extension, then the numbered releases. Newest first:
+The work ran from 2026-09-30 to 2026-10-19: fixes first, then the Tools extension, then the numbered releases. Newest first:
 
 | Date | Version | What it added |
 | --- | --- | --- |
+| 2026-10-19 | 1.5 | Video memory clock setting for the Cirrus video chip; the Video line names the chip and its memory |
 | 2026-10-06 | 1.4 | ISA Plug and Play: PnP cards such as the AWE64 are found and configured at boot, with a Tools page and the `SET BLASTER=` line |
 | 2026-10-05 | 1.3 | Chipset identified as UMC 82C480; Tools chipset settings (bus clock, I/O recovery, DRAM and L2 wait states) with a fail-safe |
 | 2026-10-05 | 1.2 | Tools chipset register viewer |
@@ -240,7 +242,7 @@ Install Python 3, NASM and the two libraries (`pip install -r requirements.txt`)
 python tools/disasm_bios.py                # regenerate out/system_bios_F000.lst
 python tools/disasm_bios.py --module A400:0003:FA40 split/system_bios_F000.bin out/module_FA40.lst
 python tools/build_rom.py --all            # assemble patches/src and build the improved ROM
-python tests/run_all.py                    # build, then run all 359 checks
+python tests/run_all.py                    # build, then run all 379 checks
 python tests/preview_screens.py            # render the screens to build/preview.html
 python tools/apply_patch.py PATCH [IN] [OUT]   # apply one .patch file and fix checksums
 ```
