@@ -243,7 +243,7 @@ Build USERHDD from `userhdd/`:
 | `tests/` | Emulator tests: `test_patches` (POST fixes), `test_fancy` (boot screen, Setup option), `test_tools` (Tools, summary, boot menu, option ROMs), `test_cdboot` (El Torito ISOs built on the fly by `isotools.py`), `test_bootorder`, `test_hdsetup`, `test_lba` (2 GB and 34 GB disks), `test_userhdd*` |
 | `out/` | Disassembly listings of the system BIOS and the Setup module |
 | `split/` | The VGA BIOS and system BIOS cut out of the image |
-| `docs/` | [BIOS notes](docs/bios-notes.md) (memory map, POST, CMOS, disks, everything the patches add), [hardware notes](docs/hardware-notes.md) (L2 cache, P1 connector, CPU upgrades), and the P1 probe worksheet |
+| `docs/` | [How it was made](docs/how-it-was-made.md) (the tools and the process, from the original ROM to the Enhanced Edition), [BIOS notes](docs/bios-notes.md) (memory map, POST, CMOS, disks, everything the patches add), [hardware notes](docs/hardware-notes.md) (L2 cache, P1 connector, CPU upgrades), and the P1 probe worksheet |
 
 ## Copyright
 
