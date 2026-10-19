@@ -10,7 +10,9 @@ simulated hardware, so patches can be tested before a chip is flashed:
     None, AtaDisk (geometry, IDENTIFY, READ SECTORS) or Atapi (ISO image,
     PACKET READ(10)/READ CAPACITY/TEST UNIT READY/REQUEST SENSE).
     IRQ 14 is modelled by setting the BIOS "interrupt received" flag 40:8E.
-  * Timer (PIT) and port 61h refresh toggle so delay loops terminate.
+  * Timer (PIT) and port 61h refresh toggle so delay loops terminate; the
+    port 61h parity latch (bit 7), set by `parity_fault` addresses and reset
+    by writing bit 2.
   * Optionally (m.vga = CirrusVga(...)) a Cirrus Logic GD542x's extended
     registers: sequencer 3C4h/3C5h with the SR6 unlock, CRTC 3D4h/3D5h with
     the chip ID in CR27, and misc output 3CCh.
@@ -25,7 +27,7 @@ Typical use:
 import os
 import struct
 
-from unicorn import Uc, UcError, UC_ARCH_X86, UC_MODE_16, UC_HOOK_INSN, UC_HOOK_INTR, \
+from unicorn import Uc, UcError, UC_ARCH_X86, UC_MODE_16, UC_HOOK_INSN, UC_HOOK_INTR, UC_HOOK_MEM_READ, \
     UC_HOOK_MEM_WRITE, UC_HOOK_CODE
 from unicorn.x86_const import (UC_X86_INS_IN, UC_X86_INS_OUT, UC_X86_REG_AX, UC_X86_REG_BX,
                                UC_X86_REG_CX, UC_X86_REG_DX, UC_X86_REG_SI, UC_X86_REG_DI,
@@ -623,6 +625,7 @@ class Machine:
         self.keys = []
         self.pit = 0
         self.refresh = 0
+        self.parity_latch = False
         self.stubs = {0x10: self._int10, 0x16: self._int16, 0x15: self._int15}
         self.ints = []
         self.rom_writes = []
@@ -722,7 +725,7 @@ class Machine:
             return self.pit & 0xFF
         if port == 0x61:
             self.refresh ^= 0x10
-            return 0x20 | self.refresh
+            return 0x20 | self.refresh | (0x80 if self.parity_latch else 0)
         if port == 0x64:
             return 0x1C
         if port == 0x60:
@@ -742,6 +745,9 @@ class Machine:
             self.chipset[self.chip_index] = value & 0xFF
         elif port == 0x80:
             self.port80.append(value & 0xFF)
+        elif port == 0x61:
+            if value & 0x04:
+                self.parity_latch = False
         elif 0x1F0 <= port <= 0x1F7 or port == 0x3F6:
             self.ide.outp(port, size, value)
         elif port == 0x279:
@@ -750,6 +756,18 @@ class Machine:
             self.pnp.write_data(value & 0xFF)
         elif self.vga is not None:
             self.vga.outp(port, size, value)
+
+    def parity_fault(self, addr, times=None):
+        """A byte with a bad parity bit: reading it sets the port 61h latch
+        (`times` reads only, then it reads clean). The data stays right."""
+        state = {"n": 0}
+
+        def hook(uc, access, address, size, value, user):
+            if address <= addr < address + size and (times is None or state["n"] < times):
+                state["n"] += 1
+                self.parity_latch = True
+        self.uc.hook_add(UC_HOOK_MEM_READ, hook, begin=addr - 3, end=addr)
+        return state
 
     def _romwrite(self, uc, access, address, size, value, user):
         self.rom_writes.append((address, size, value, self.chipset.get(0x9B, 0) & 1))

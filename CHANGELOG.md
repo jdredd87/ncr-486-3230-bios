@@ -4,6 +4,13 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.6 (2026-10-19)
+
+- Tools → 4 **Memory test** now catches **parity errors**. A stick with a bad parity chip reads every data bit back right, so the data compare alone missed it. After each 64 KB checked, the test reads the parity latch (port 61h bit 7). When it is set, the test reads that 64 KB again with the caches emptied first and logs each 16-byte line that fails. An error that does not come back is logged for the whole 64 KB. Parity errors are counted apart from data errors.
+- Two more patterns, 01h and FEh bytes, so each byte's parity bit is tested holding both values (00h, FFh, 55h and AAh all give the same parity bit). There are now seven tests in a pass.
+- The NMI stays masked during the test, so a parity error is reported by the test instead of halting the machine with NCR's "MAIN BOARD PARITY ERROR AT" message. That message only names an address when the error is in the first 640 KB; above that it stops with the address blank.
+- Emulator: a model of the port 61h parity latch.
+
 ## 1.5 (2026-10-19)
 
 - New: **Video memory clock** in Tools → 9 Chipset settings, for the Cirrus Logic CL-GD542x video chip: the VGA BIOS's 50.1 MHz, or 53.7, 55.5, 57.3, 59.1 or 60.9 MHz. It is stored in CMOS 53h, applied at the end of POST with the other chipset settings, and covered by the same fail-safe and Shift skip. The row also shows the clock the chip runs at now.

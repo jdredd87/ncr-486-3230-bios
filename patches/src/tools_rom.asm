@@ -321,7 +321,7 @@ V_TEST      equ 0x2E
 V_NLOG      equ 0x2F
 V_START     equ 0x30
 V_END       equ 0x34
-V_ADDR      equ 0x38
+V_PERR      equ 0x38                ; memory test: parity errors
 V_PAT       equ 0x3C
 V_EXP       equ 0x40
 V_TMP       equ 0x44
@@ -7543,9 +7543,11 @@ page_memtest:
     mov byte [gs:V_ATTR], A_VALUE
     mov dx, 0x0503
     call goto_rc
-    SAY "Tests every byte of RAM except the first 64 KB, with three patterns:", 3
-    SAY "each address holding its own address, a 55h/AAh checkerboard (both ways)", 3
-    SAY "and all zeros / all ones. It runs until you press Esc.", 3, 3
+    SAY "Tests every byte of RAM except the first 64 KB, with seven patterns:", 3
+    SAY "each address holding its own address, a 55h/AAh checkerboard (both ways),", 3
+    SAY "all zeros / all ones, and 01h / FEh bytes (the other value of the parity", 3
+    SAY "bit). Parity errors are caught too: a bad parity chip on a memory stick", 3
+    SAY "shows up there even when every data bit reads back right. Esc stops it.", 3, 3
     SAY 1, A_LABEL, "Conventional  ", 1, A_VALUE, "64 KB - "
     call base_kb
     call putdec
@@ -7574,9 +7576,13 @@ memtest_run:
     call flat_on
     call a20_on
     mov dword [gs:V_ERRS], 0
+    mov dword [gs:V_PERR], 0
     mov word [gs:V_PASS], 0
     mov byte [gs:V_NLOG], 0
     mov byte [gs:V_STOP], 0
+    mov al, 0x8D                    ; NMI masked: a parity error is found here,
+    out 0x70, al                    ; not by NCR's NMI handler (which halts)
+    call par_clear
     call a20_check
     jnc .pass
     mov byte [gs:V_ATTR], A_BAD
@@ -7585,7 +7591,7 @@ memtest_run:
     SAY "Gate A20 did not open: only conventional memory is tested."
 .pass:
     inc word [gs:V_PASS]
-    xor bp, bp                      ; test number 0..4
+    xor bp, bp                      ; test number 0..6
 .test:
     mov ax, bp
     mov [gs:V_TEST], al
@@ -7608,10 +7614,11 @@ memtest_run:
     jne .stop
 .noext:
     inc bp
-    cmp bp, 5
+    cmp bp, 7
     jb .test
     jmp .pass
 .stop:
+    call par_clear                  ; no latched error left for a later NMI
     call a20_off
     mov byte [gs:V_ATTR], A_TITLE
     mov dx, 0x1503
@@ -7623,12 +7630,16 @@ memtest_run:
     SAY " full pass(es), "
     mov eax, [gs:V_ERRS]
     call putdec
-    SAY " error(s). Press any key."
+    SAY " error(s), "
+    mov eax, [gs:V_PERR]
+    call putdec
+    SAY " parity. Press any key."
     call getkey
     ret
 
 ; Write the whole range with the current test's pattern, then verify it,
-; in 64 KB steps, updating the screen and watching for Esc.
+; in 64 KB steps, updating the screen and watching for Esc. After each
+; verified step the parity latch (port 61h bit 7) is checked.
 sweep:
     mov byte [gs:V_TMP+3], 0        ; phase 0 = write, 1 = verify
 .phase:
@@ -7637,6 +7648,7 @@ sweep:
     cmp edi, [gs:V_END]
     jae .phase_done
     call status_line
+    mov [gs:V_PAT], edi             ; this step's start, for par_find
     mov ecx, 16384                  ; dwords in 64 KB
     mov eax, [gs:V_END]
     sub eax, edi
@@ -7662,6 +7674,10 @@ sweep:
     add edi, 4
     dec ecx
     jnz .verify
+    in al, 0x61
+    test al, 0x80
+    jz .after
+    call par_find
 .after:
     mov ah, 1
     int 0x16
@@ -7679,8 +7695,74 @@ sweep:
     cmp byte [gs:V_TMP+3], 0
     jne .done
     mov byte [gs:V_TMP+3], 1
+    call par_clear                  ; only reads of the verify count
     jmp .phase
 .done:
+    ret
+
+par_clear:                          ; reset the parity / I/O check latches, checks on
+    push ax
+    in al, 0x61
+    or al, 0x0C
+    out 0x61, al
+    and al, 0xF3
+    out 0x61, al
+    pop ax
+    ret
+
+; A parity error was latched during the step from V_PAT to EDI. Read the step
+; again, one dword at a time, checking the latch after each read; log each
+; 16-byte line that sets it. The caches would answer those reads, so 512 KB
+; elsewhere is read first: that empties the 8 KB on-chip cache and the
+; direct-mapped L2 (256 KB at most). A step that does not fail again is
+; logged as a whole.
+par_find:
+    pushad
+    mov esi, 0x10000                ; conventional 64-576 KB for a step above 1 MB
+    cmp dword [gs:V_PAT], 0x100000
+    jae .evict
+    call ext_kb                     ; else 1 MB-1.5 MB, if there is that much
+    cmp eax, 512
+    jb .clear
+    mov esi, 0x100000
+.evict:
+    mov ecx, 32768                  ; 512 KB in 16-byte lines
+.ev:
+    mov eax, [fs:esi]
+    add esi, 16
+    dec ecx
+    jnz .ev
+.clear:
+    call par_clear
+    mov ebx, edi                    ; end
+    mov edi, [gs:V_PAT]
+    xor dx, dx                      ; lines found
+.read:
+    cmp edi, ebx
+    jae .done
+    mov eax, [fs:edi]
+    in al, 0x61
+    test al, 0x80
+    jnz .bad
+    add edi, 4
+    jmp short .read
+.bad:
+    call par_clear
+    and edi, ~0x0F
+    mov eax, 16
+    call log_parity
+    inc dx
+    add edi, 16
+    jmp short .read
+.done:
+    test dx, dx
+    jnz .x
+    mov edi, [gs:V_PAT]
+    mov eax, ebx
+    sub eax, edi
+    call log_parity
+.x:
+    popad
     ret
 
 pattern:                            ; EAX = expected dword at EDI for the current test
@@ -7703,15 +7785,31 @@ pattern:                            ; EAX = expected dword at EDI for the curren
 .r:
     ret
 .solid:
+    cmp al, 5
+    jae .odd
     mov eax, 0
     cmp byte [gs:V_TEST], 3
     je .r
     dec eax
     ret
+.odd:                               ; bytes with an odd number of ones
+    mov eax, 0x01010101
+    je .r                           ; test 5
+    mov eax, 0xFEFEFEFE
+    ret
 
+; Log entries are (address, expected, read). A parity entry has expected =
+; read = the size of the area it names (data errors never match).
+log_parity:                         ; EDI, size EAX
+    pushad
+    inc dword [gs:V_PERR]
+    mov edx, eax
+    jmp short log_put
 log_error:                          ; EDI, expected EAX, actual at FS:EDI
     pushad
     inc dword [gs:V_ERRS]
+    mov edx, [fs:edi]
+log_put:
     movzx bx, byte [gs:V_NLOG]
     cmp bx, 6
     jb .room
@@ -7735,8 +7833,7 @@ log_error:                          ; EDI, expected EAX, actual at FS:EDI
     imul bx, bx, 12
     mov [gs:V_LOG + bx], edi
     mov [gs:V_LOG + bx + 4], eax
-    mov eax, [fs:edi]
-    mov [gs:V_LOG + bx + 8], eax
+    mov [gs:V_LOG + bx + 8], edx
     popad
     ret
 
@@ -7823,13 +7920,23 @@ status_line:                        ; pass, test, progress bar and error log
     mov byte [gs:V_ATTR], A_BAD
 .z:
     call putdec
+    mov byte [gs:V_ATTR], A_LABEL
+    SAY "   Parity "
+    mov byte [gs:V_ATTR], A_OK
+    mov eax, [gs:V_PERR]
+    test eax, eax
+    jz .pz
+    mov byte [gs:V_ATTR], A_BAD
+.pz:
+    call putdec
     mov byte [gs:V_ATTR], A_DIM
-    SAY "      (address  expected  read)"
+    SAY "   (address  expected  read)"
     movzx cx, byte [gs:V_NLOG]
     xor bx, bx
     mov dh, 14
 .log:
-    jcxz .x
+    test cx, cx
+    jz .x
     push cx
     mov dl, 11
     call goto_rc
@@ -7839,24 +7946,40 @@ status_line:                        ; pass, test, progress bar and error log
     call puthex
     SAY "  "
     mov eax, [gs:V_LOG + bx + 4]
+    cmp eax, [gs:V_LOG + bx + 8]
+    je .par
     call puthex
     SAY "  "
     mov eax, [gs:V_LOG + bx + 8]
     call puthex
+    SAY "                   "        ; as wide as a parity entry
+    jmp .lnext
+.par:
+    SAY "parity error in "
+    cmp eax, 16
+    jne .step
+    SAY "this 16-byte line    "
+    jmp .lnext
+.step:
+    SAY "this 64 KB, not again"
+.lnext:
     pop cx
     add bx, 12
     inc dh
-    loop .log
+    dec cx
+    jmp .log
 .x:
     popad
     ret
 
-testnames: dw tn0, tn1, tn2, tn3, tn4
-tn0: db "1/5 own address   ", 0
-tn1: db "2/5 checkerboard  ", 0
-tn2: db "3/5 inverted board", 0
-tn3: db "4/5 all zeros     ", 0
-tn4: db "5/5 all ones      ", 0
+testnames: dw tn0, tn1, tn2, tn3, tn4, tn5, tn6
+tn0: db "1/7 own address   ", 0
+tn1: db "2/7 checkerboard  ", 0
+tn2: db "3/7 inverted board", 0
+tn3: db "4/7 all zeros     ", 0
+tn4: db "5/7 all ones      ", 0
+tn5: db "6/7 01h bytes     ", 0
+tn6: db "7/7 FEh bytes     ", 0
 s_writing: db "  writing  ", 0
 s_verifying: db "  checking ", 0
 t_mem: db "Memory test", 0

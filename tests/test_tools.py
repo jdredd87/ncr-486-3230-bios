@@ -93,10 +93,11 @@ check("NCR checksum 44h-47h" in t and "Fancy boot (48h)      on" in t, "CMOS: NC
 
 # ---------------------------------------------------------------- memory test
 m = machine(ext_mb=3)
-esc_after_polls(m, 600)
-run_tools(m, [key("4"), ENTER], max_insns=2_000_000_000)
+esc_after_polls(m, 830)                             # 7 tests x (9 + 48 steps) x write and verify = 798
+run_tools(m, [key("4"), ENTER], max_insns=3_000_000_000)
 t = text(m)
-check("Stopped. 1 full pass(es), 0 error(s)" in t, "memory test: a clean full pass over 64 KB-640 KB and 1-4 MB")
+check("Stopped. 1 full pass(es), 0 error(s), 0 parity" in t, "memory test: a clean full pass over 64 KB-640 KB and 1-4 MB")
+check(m.cmos_index & 0x80, "memory test: NMI left masked")
 
 BAD = 0x250004
 m = machine(ext_mb=3)
@@ -127,6 +128,18 @@ m.uc.hook_add(UC_HOOK_MEM_READ, stuck2, begin=BADC - 3, end=BADC)
 esc_after_polls(m, 40)
 run_tools(m, [key("4"), ENTER], max_insns=2_000_000_000)
 check("00054320" in text(m), "memory test: conventional-memory fault found")
+
+m = machine(ext_mb=3)                               # a bad parity bit: the data reads back right
+m.parity_fault(0x250006)
+m.parity_fault(0x2A1234, times=1)                   # one that does not come back
+esc_after_polls(m, 120)                             # into test 2, past test 1's verify of 1-4 MB
+run_tools(m, [key("4"), ENTER], max_insns=2_000_000_000)
+t = text(m)
+check("00250000  parity error in this 16-byte line" in t, "memory test: parity error found, to the 16-byte line")
+check("002A0000  parity error in this 64 KB, not again" in t, "memory test: a parity error that does not repeat names its 64 KB")
+check("0 error(s), 2 parity" in t and "Parity 2" in t, "memory test: parity errors counted apart from data errors")
+check(m.cell(13, 11)[1] != 0x1C, "memory test: no data error for a parity-only fault")
+check(not m.parity_latch, "memory test: the parity latch is reset when it stops")
 
 # ---------------------------------------------------------------- end of POST
 m = machine()
