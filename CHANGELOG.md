@@ -4,6 +4,11 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.7 (2026-10-19)
+
+- Memory test fix: once more than six errors had been logged, each new entry showed the wrong last four hex digits of its address (the log's scroll overwrote them). This affected data errors since the first version, and parity errors in 1.6.
+- The memory test shows the range the parity errors fall in ("Parity errors from … to …"), so many errors in one area read at a glance.
+
 ## 1.6 (2026-10-19)
 
 - Tools → 4 **Memory test** now catches **parity errors**. A stick with a bad parity chip reads every data bit back right, so the data compare alone missed it. After each 64 KB checked, the test reads the parity latch (port 61h bit 7). When it is set, the test reads that 64 KB again with the caches emptied first and logs each 16-byte line that fails. An error that does not come back is logged for the whole 64 KB. Parity errors are counted apart from data errors.

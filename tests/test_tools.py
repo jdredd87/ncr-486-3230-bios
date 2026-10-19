@@ -140,6 +140,17 @@ check("002A0000  parity error in this 64 KB, not again" in t, "memory test: a pa
 check("0 error(s), 2 parity" in t and "Parity 2" in t, "memory test: parity errors counted apart from data errors")
 check(m.cell(13, 11)[1] != 0x1C, "memory test: no data error for a parity-only fault")
 check(not m.parity_latch, "memory test: the parity latch is reset when it stops")
+check("Parity errors from 00250000 to 002AFFFF" in t, "memory test: the range of parity errors is shown")
+
+m = machine(ext_mb=3)                               # more errors than the log's six rows
+for k in range(8):
+    m.parity_fault(0x250006 + k * 0x1230)
+esc_after_polls(m, 120)
+run_tools(m, [key("4"), ENTER], max_insns=2_000_000_000)
+t = text(m)
+check(all("%08X  parity error in this 16-byte line" % ((0x250006 + k * 0x1230) & ~15) in t for k in range(2, 8))
+      and "00250000  parity" not in t, "memory test: the log keeps the latest six with their own addresses")
+check("Parity errors from 00250000 to 00257F5F" in t and "Parity 8" in t, "memory test: range and count over all eight")
 
 # ---------------------------------------------------------------- end of POST
 m = machine()

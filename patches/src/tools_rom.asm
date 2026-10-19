@@ -323,7 +323,7 @@ V_START     equ 0x30
 V_END       equ 0x34
 V_PERR      equ 0x38                ; memory test: parity errors
 V_PAT       equ 0x3C
-V_EXP       equ 0x40
+V_PLO       equ 0x40                ; memory test: lowest and highest byte in a parity entry
 V_TMP       equ 0x44
 V_IDTYPE    equ 0x48                ; 2 bytes
 V_STOP      equ 0x4A
@@ -350,6 +350,7 @@ V_CS82      equ 0x186
 V_CS91      equ 0x187
 V_CSMC      equ 0x188               ; video memory clock choice (0 = the VGA BIOS's), CMOS 53h
 V_CSEL      equ 0x189
+V_PHI       equ 0x18C               ; (low one at V_PLO)
 V_PNF       equ 0x190               ; ISA PnP settings (CMOS 55h-5Eh): bit 0 = off
 V_PNIRQ     equ 0x191               ; word: IRQs kept free
 V_PNDMA     equ 0x193               ; DMA channels kept free
@@ -7804,6 +7805,20 @@ log_parity:                         ; EDI, size EAX
     pushad
     inc dword [gs:V_PERR]
     mov edx, eax
+    lea ecx, [edi + eax - 1]        ; its last byte
+    cmp dword [gs:V_PERR], 1
+    je .first
+    cmp edi, [gs:V_PLO]
+    jae .lo
+    mov [gs:V_PLO], edi
+.lo:
+    cmp ecx, [gs:V_PHI]
+    jbe log_put
+    mov [gs:V_PHI], ecx
+    jmp short log_put
+.first:
+    mov [gs:V_PLO], edi
+    mov [gs:V_PHI], ecx
     jmp short log_put
 log_error:                          ; EDI, expected EAX, actual at FS:EDI
     pushad
@@ -7814,6 +7829,7 @@ log_put:
     cmp bx, 6
     jb .room
     mov bx, 5                       ; keep the latest six: shift up
+    push edi
     push ds
     push gs
     pop ds
@@ -7826,6 +7842,7 @@ log_put:
     rep movsb
     pop es
     pop ds
+    pop edi
     jmp short .put
 .room:
     inc byte [gs:V_NLOG]
@@ -7969,6 +7986,19 @@ status_line:                        ; pass, test, progress bar and error log
     dec cx
     jmp .log
 .x:
+    cmp dword [gs:V_PERR], 0
+    je .xx
+    mov byte [gs:V_ATTR], A_LABEL
+    mov dx, 0x1403
+    call goto_rc
+    SAY "Parity errors from ", 1, A_BAD
+    mov eax, [gs:V_PLO]
+    mov cl, 8
+    call puthex
+    SAY 1, A_LABEL, " to ", 1, A_BAD
+    mov eax, [gs:V_PHI]
+    call puthex
+.xx:
     popad
     ret
 
