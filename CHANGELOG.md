@@ -4,6 +4,10 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.12 (2026-10-20)
+
+- NCR's **power-on and Setup passwords are removed** (the new `no_password` patch, which replaces 1.11's `keep_cmos`). Both password checks now go straight to their own exits, so nothing is asked for, checked, set or cleared, and CMOS 34h–71h is never touched by NCR's code. The screen reset at the end of POST and before Setup is unchanged. Passwords could only be set from NCR's prompt, not from Setup, so no option disappears.
+
 ## 1.11 (2026-10-20)
 
 - Fix, the real cause of lost settings: **NCR's password check erased them at the end of every boot.** At the end of POST (F000:481B → 04DA) NCR checks password slot 0. With no password set, the slot is empty and the check fails, so NCR's reset (F000:05D1) zeroes CMOS 34h, 36h–3Eh and 49h–71h. That range holds the saved boot order, the chipset settings, the video clock and the Plug and Play settings. It ran after Tools and after the settings were applied, so a restart straight from Tools seemed to keep them, while booting to DOS lost them. The new `keep_cmos` patch (one byte, F000:05EF) stops that loop after 49h. NCR's own bytes (34h, 36h–3Eh and the password-prompt flag in 49h) are still cleared.

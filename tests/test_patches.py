@@ -218,9 +218,11 @@ m = ide(IMPROVED, ctype=0x00, master=Atapi())
 check(m.cmds == [] and m.mem_byte(0x475) == 0, "improved: C=0 still never touches the IDE bus")
 
 
-# ---------------------------------------------------------------- keep_cmos: NCR's end-of-POST password check
-def password_check(image):
-    """Run F000:04DA (called at F000:481B at the end of every POST) with CMOS 34h-71h all 5Ah."""
+# ---------------------------------------------------------------- no_password: NCR's password checks
+def password_check(image, entry, slot=False):
+    """Run F000:04DA (power-on check, end of every POST) or 0616 (before Setup)
+    with CMOS 34h-71h all 5Ah. slot=True stores a valid password "A" in slot 0
+    with the prompt flag on, as NCR's own code would."""
     m = Machine(image)
     m.install_rom_vectors()
     m.video_init(3)
@@ -228,21 +230,33 @@ def password_check(image):
         m.cmos[i] = 0x5A
     m.cmos[0x53] = 0x00                             # slot 0 empty: no password set
     m.cmos[0x0E] = 0x00
+    if slot:
+        m.cmos[0x4A], m.cmos[0x52], m.cmos[0x53] = 0x41 ^ 0x6D, 0x41 ^ 0x6D, 0x01
+        m.cmos[0x49] = 0x81
+    int9 = m.vector(9)
     try:
-        m.near_call(0xF000, 0x04DA, max_insns=20_000_000)
+        m.near_call(0xF000, entry, max_insns=20_000_000)
     except StopEmu:
         pass
-    return m.cmos
+    return m, int9
 
 
-c = password_check(ORIGINAL)
+m, _ = password_check(ORIGINAL, 0x04DA)
+c = m.cmos
 check(c[0x34] == 0 and not any(c[0x36:0x3F]) and not any(c[0x49:0x72]),
       "original: with no password set, the end of POST zeroes 34h, 36h-3Eh and 49h-71h")
-c = password_check(IMPROVED)
-check(c[0x34] == 0 and not any(c[0x36:0x3F]) and c[0x49] == 0 and c[0x35] == 0x5A and c[0x3F] == 0x5A,
-      "improved: NCR's own bytes (34h, 36h-3Eh, 49h) are still cleared")
-check(all(v == 0x5A for v in c[0x4A:0x53]) and all(v == 0x5A for v in c[0x54:0x72]),
-      "improved: 4Ah-71h (boot order, chipset, PnP, video clock) are kept")
+m, _ = password_check(ORIGINAL, 0x04DA, slot=True)
+check("Enter Password" in m.screen_text(), "original: a stored password is asked for at the end of POST")
+m, _ = password_check(ORIGINAL, 0x0616, slot=True)
+check("Password" in m.screen_text(), "original: and before Setup")
+for entry, where in ((0x04DA, "end of POST"), (0x0616, "before Setup")):
+    for slot in (False, True):
+        m, int9 = password_check(IMPROVED, entry, slot)
+        check(all(v == 0x5A for i, v in enumerate(m.cmos[0x34:0x72]) if 0x34 + i not in (0x49, 0x4A, 0x52, 0x53))
+              and "Password" not in m.screen_text() and m.vector(9) == int9,
+              "improved, %s%s: no prompt, CMOS 34h-71h untouched, INT 9 restored"
+              % (where, ", a password stored" if slot else ""))
+
 
 print("\n%d failed" % len(failed) if failed else "\nall passed")
 sys.exit(1 if failed else 0)
