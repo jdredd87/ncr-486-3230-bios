@@ -4050,7 +4050,7 @@ chip_apply:                         ; end of POST: saved settings into the chips
     call cs_read
     jnc .have
     call cs_flag_clear
-    ret
+    jmp short .vga
 .have:
     push es
     push 0x40
@@ -4059,7 +4059,7 @@ chip_apply:                         ; end of POST: saved settings into the chips
     pop es
     jz .noshift
     mov byte [gs:V_CSTAT], 3
-    ret
+    jmp short .vga
 .noshift:
     mov al, CS_FLAG
     call cmos_read
@@ -4072,7 +4072,9 @@ chip_apply:                         ; end of POST: saved settings into the chips
     call cmos_write
 .failed:
     mov byte [gs:V_CSTAT], 2
-    ret
+.vga:                               ; not applied: the video clock still goes back to
+    mov byte [gs:V_CSMC], 0         ; 50.1 MHz, which the VGA BIOS skips on a warm boot
+    jmp mclk_apply
 .go:
     mov al, CS_FLAG
     mov ah, 'P'
@@ -4191,24 +4193,37 @@ sr_write:                           ; sequencer register AL = AH
     pop dx
     ret
 
+; Choice 0 is the VGA BIOS's 1Ch (50.1 MHz). It is written here too: the VGA
+; BIOS sets it only on a cold start, so after Ctrl-Alt-Del the chip would keep
+; a faster clock from the boot before, even when the fail-safe skips it.
 mclk_apply:                         ; end of POST: the saved video memory clock
     push bx
+    push cx
     movzx bx, byte [gs:V_CSMC]
-    test bx, bx
-    jz .x
+    mov cl, [cs:mc_vals + bx]
+    test cl, cl
+    jnz .unlock
+    mov cl, 0x1C
+.unlock:
     call vga_unlock
     jc .x
     push ax
     mov al, 0x1F
     call sr_read
+    mov ah, al
+    and ah, 0x3F
+    cmp ah, cl
+    je .same                        ; already right: not written
     and al, 0xC0                    ; bits 7-6 are not the clock
-    or al, [cs:mc_vals + bx]
+    or al, cl
     mov ah, al
     mov al, 0x1F
     call sr_write
+.same:
     pop ax
     call vga_relock
 .x:
+    pop cx
     pop bx
     ret
 

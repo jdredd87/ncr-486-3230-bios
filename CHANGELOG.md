@@ -4,6 +4,10 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.9 (2026-10-19)
+
+- Fix: after Ctrl-Alt-Del the video chip kept the memory clock from the boot before. The VGA BIOS sets 50.1 MHz only on a cold start. So "VGA BIOS's (50.1 MHz)", no saved settings, and the fail-safe or Shift skip could all leave a faster clock running. Whenever the saved clock is not applied, the end of POST now puts the chip back to 50.1 MHz. It writes only when the clock differs.
+
 ## 1.8 (2026-10-19)
 
 - Fix: the **video memory clock was not kept**. 1.5 stored it in CMOS 53h, but NCR's POST clears 53h on every boot (F000:40FE, when the keyboard controller's input port bit 5 is low, as it is on this board). It is now in CMOS 60h, which nothing else uses. A clock saved with 1.5 to 1.7 is lost: set it again and save.

@@ -37,6 +37,7 @@ The VGA BIOS is Cirrus Logic's CL-GD5422/5424/5426/5428 BIOS v1.30 (Quadtel-base
 - **Chip ID.** CRTC register 27h bits 7–2: 23h = GD5422, 25h = GD5424, 24h = GD5426, 26h = GD5428 (E000:0FF6 tells 5422 and 5424 apart from the rest, and E000:0C5C checks for 98h = GD5428). 22h (GD5420) and 27h (GD5429) come from Cirrus's register documentation, not this BIOS.
 - **Video memory.** SR0A bits 4–3, set by the BIOS: 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB (E000:147A, also behind INT 10h AH=12h BL=85h).
 - **Memory clock.** SR1F bits 5–0, MCLK = value × 14.31818 MHz / 8. The BIOS writes 1Ch (50.1 MHz) once while it starts, for every chip ID, and never on a mode change or VESA mode set. `tools_rom` can set it at the end of POST (CMOS 60h, see the chipset settings). 1.5–1.7 used CMOS 53h, which NCR's POST clears at F000:40FE whenever the keyboard controller's input port bit 5 reads low (it does on this board), so the setting never survived a restart.
+- **Warm boot.** On Ctrl-Alt-Del (40:72 = 1234h) the VGA BIOS's start-up skips SR1F, so the chip keeps the clock it had. `chip_apply` therefore writes 1Ch whenever the saved clock is not used (no settings, failed, Shift), and leaves the register alone when it already holds the right value.
 - **Speed test** (Tools 9 → V). For each clock it writes 16 KB with `rep stosd` and reads it with `rep lodsd`, past the visible text page (video segment + 100h), timed with PIT channel 2 in mode 0, best of four with interrupts off. KB/s = 16 × 1193182 / counts. The clock is set back to its earlier value afterwards.
 
 ## POST
@@ -44,6 +45,10 @@ The VGA BIOS is Cirrus Logic's CL-GD5422/5424/5426/5428 BIOS v1.30 (Quadtel-base
 - **POST codes** go to port 80h, and most are also echoed to the LPT1 data port (378h), so a parallel-port LED card works as a POST card.
 - **ROM-stack calls.** Before RAM is tested, POST calls subroutines with `mov sp, X` / `jmp`; each subroutine's `ret` pops a continuation address stored at X.
 - **Shutdown table.** The CMOS shutdown-code dispatch table is at F000:4890. Its last entries double as code (`in al,60h; out 0EBh,al`).
+- **Shadow RAM and BIOS caching** (F000:2E8x–3035, 3AC5–3B10). NCR's F1 Setup already offers them; the bits live in CMOS 47h and 40h:
+  - 47h bit 1: 486 internal cache (CR0.CD/NW). Bit 3: **BIOS Cacheable**: chipset 9Bh gets bits 5 and 2 (OR 24h), which make\|= 24h, which makes E0000–EFFFF and F0000–FFFFF cacheable. Bit 7: **Copy Video to C0000**: the VGA BIOS is copied to shadow RAM at C0000 (9Dh/9Eh bits 0–1), INT 10h and the video vectors are pointed at C000, and with BIOS Cacheable on, 9Ch bits 0–1 make C0000–C7FFF cacheable\|= 3 makes C0000–C7FFF cacheable. Bit 4: Shadow E0000–EFFFF (9Bh bits 3–4).
+  - 40h bit 0 is set once the video BIOS has been copied. On later boots 9Bh bits 3–5 are cleared and 97h bit 6 hands E0000 to the AT bus, unless 47h bit 4 shadows E0000 again. Copy Video to C0000 without Shadow E0000–EFFFF therefore unmaps E0000–EFFFF, and with it the Tools extension at E8000 that the CD boot and LBA INT 13h code run from.
+  - Shadow C0000–DFFFF in 16 KB blocks (9Dh) is for option ROMs on cards.
 - **Option-ROM scan** (POST code 74h, F000:4540). It covers C000–DFFF. When CMOS 40h bit 0 is set (apparently "Copy Video to C0000") it covers C800–EFFF instead, which includes the unused E8000 area. That could hold an extra option ROM. **Untested on hardware.**
 - **Setup entry.** Setup is reachable in only two places, both after the hard-disk init:
   - the error prompt at F000:478A (F1 or Enter);
@@ -81,7 +86,7 @@ If the keyboard interface test returns code 3 and the keyboard clock/data lines 
 - **INT 13h handler.** The fixed-disk handler is at F000:94E3, installed at F000:907B. It supports functions **00h–15h only**: no INT 13h extensions, no LBA, CHS only, which means about **504 MB**. AH=08h reports one cylinder fewer than the table (a reserved diagnostic cylinder), and AH=15h counts the same.
 - **Large-disk (LBA) mode** (`tools_rom`). POST's call to the disk init (F000:436E) goes through the glue (G_HDINIT), which then calls E800:0016. For each drive set to Automatic that reports LBA and more than 1,032,192 sectors:
   - The LBA-assisted geometry is computed: heads are the fewest of 32/64/128/255 that keep cylinders at or below 1024; sectors are 63.
-  - The data goes into F000:EED6–EF05, with chipset 9Bh bit 0 cleared and then set again, read back to check: a far jump to the previous INT 13h, flags, LBA sector counts, and two translated parameter tables (A0h signature, checksum byte).
+  - The data goes into F000:EED6–EF05, with chipset 9Bh gets bits 5 and 2 (OR 24h), which makebit 0 cleared and then set again, read back to check: a far jump to the previous INT 13h, flags, LBA sector counts, and two translated parameter tables (A0h signature, checksum byte).
   - INT 13h points to E800:hd_int13, and INT 41h/46h to the tables.
 
   For an LBA drive, functions 00–15h use CHS to LBA translation and ATA LBA commands (20h/30h/40h, up to 128 sectors per command, polled PIO with nIEN set, device-control byte restored from 40:76). Functions 41h–44h, 47h and 48h are EDD 1.1 (28-bit LBA). Status goes to 40:74. Every other drive number jumps straight on to the stock handler. The per-call state is on the caller's stack, so no RAM is reserved.

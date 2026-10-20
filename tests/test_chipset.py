@@ -230,6 +230,18 @@ m.cmos[MC] = 0x3 | (0x3 ^ 0xF) << 4
 postend(m)
 check(m.cmos[0x52] == ord("P"), "no Cirrus chip: the rest of the settings still apply")
 
+for how, prep in (("no saved settings", lambda m: None),
+                  ("Shift held", lambda m: (save(m, 0, 0, 0x0A), m.cmos.__setitem__(MC, 0x5 | 0xA0),
+                                            m.write(0x417, bytes([0x02])))),
+                  ("the last boot failed", lambda m: (save(m, 0, 0, 0x0A), m.cmos.__setitem__(MC, 0x5 | 0xA0),
+                                                      m.cmos.__setitem__(0x52, ord("P"))))):
+    m = setup()
+    v = cirrus(m, mclk=0x62)                                # 60.9 MHz kept over Ctrl-Alt-Del, bit 6 set
+    prep(m)
+    postend(m)
+    check(v.sr[0x1F] == 0x5C, "%s: a clock left from the boot before goes back to 50.1 MHz (SR1F=%02X)"
+          % (how, v.sr[0x1F]))
+
 m = setup()
 v = cirrus(m)
 m.stubs.pop(0x10)                                           # the real VGA BIOS's INT 10h
@@ -241,6 +253,13 @@ for mode in (0x03, 0x13, 0x5F, 0x03):
 m.int_call(0x10, ax=0x4F02, bx=0x101, max_insns=50_000_000)
 check(starts == [(0x1F, 0x1C)] and v.sr[0x1F] == 0x20,
       "VGA BIOS: sets 1Ch (50.1 MHz) once at start-up; mode sets and VESA modes keep a later value")
+m = setup()
+v = cirrus(m, mclk=0x22)
+m.stubs.pop(0x10)
+m.write(0x472, struct.pack("<H", 0x1234))                  # Ctrl-Alt-Del
+m.far_call(0xE000, 0x0003, max_insns=50_000_000)
+check(not [w for w in v.sr_writes if w[0] == 0x1F] and v.sr[0x1F] == 0x22,
+      "VGA BIOS: on a warm boot it leaves the memory clock as it was")
 
 m = setup()
 v = cirrus(m)
