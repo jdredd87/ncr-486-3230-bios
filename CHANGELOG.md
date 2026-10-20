@@ -7,7 +7,7 @@ The version is set in one place, `patches/src/version.inc`. It shows on the boot
 ## 1.10 (2026-10-20)
 
 - Fix: after Ctrl-Alt-Del the chipset kept the timing from the boot before, because NCR's POST skips its chipset table on a warm boot (F000:21F4). That also meant a too-fast setting stayed in the chip when the fail-safe or Shift skipped it. When the saved settings are not applied, the end of POST now writes NCR's values back into 81h, 82h and 91h.
-- CMOS accesses wait between the index (port 70h) and the data (port 71h), as NCR's own code does (two writes to port EBh). Without the wait, the real-time clock chip can miss a write. This is a suspect for chipset settings that did not survive a restart on real hardware.
+- CMOS accesses wait between the index (port 70h) and the data (port 71h), as NCR's own code does (two writes to port EBh). Without the wait, the real-time clock chip missed writes: on real hardware the chipset and video clock settings did not survive a restart before this change, and do with it (confirmed by restart and power cycle).
 - S on Tools → 9 reads the saved block back. If CMOS did not keep it, the page says "NOT saved" instead of "Saved".
 
 ## 1.9 (2026-10-19)
