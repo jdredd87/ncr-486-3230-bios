@@ -6,8 +6,10 @@ The settings page (Tools 9), what it saves in CMOS 4Eh-52h, how the end of
 POST writes the saved values into the chipset registers, and the fail-safe:
 a boot that never reaches INT 19h or Tools makes the next boot skip them,
 and a held Shift key skips them once. Also the Cirrus Logic video memory
-clock on the same page (CMOS 53h, SR1F), the real VGA BIOS's own handling
-of that clock, and the Video line naming the chip and its memory.
+clock on the same page (CMOS 60h, SR1F), NCR's POST clearing CMOS 53h (why
+the clock is not kept there any more), the video memory speed test (V), the
+real VGA BIOS's own handling of that clock, and the Video line naming the
+chip and its memory.
 """
 import os
 import struct
@@ -161,8 +163,11 @@ def cirrus(m, **kw):
     return m.vga
 
 
+MC = 0x60                                                   # the video clock's CMOS byte
+
+
 def mclk_saved(m):
-    v = m.cmos[0x53]
+    v = m.cmos[MC]
     return v & 0x0F if v >> 4 == (v & 0x0F) ^ 0x0F else None
 
 
@@ -175,7 +180,7 @@ check("Video memory clock" in r and "VGA BIOS's (50.1 MHz)" in r and "50.1 MHz" 
 m = setup()
 v = cirrus(m)
 run_tools(m, [key("9")] + [DOWN] * 6 + [RIGHT, RIGHT, RIGHT, key("s")])
-check(mclk_saved(m) == 3 and saved(m) is not None, "page: 57.3 MHz saved to CMOS 53h with the chipset block")
+check(mclk_saved(m) == 3 and saved(m) is not None, "page: 57.3 MHz saved to CMOS 60h with the chipset block")
 postend(m)
 check(v.sr[0x1F] == 0x20 and m.cmos[0x52] == ord("P"), "end of POST: SR1F = 20h (57.3 MHz), under the fail-safe")
 run_tools(m, [key("9")])
@@ -184,44 +189,44 @@ check("57.3 MHz" in r and r.count("57.3 MHz") == 2, "page: setting and chip both
 m = setup()
 v = cirrus(m, mclk=0x5C)                                    # bit 6 set: must survive
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x5 | (0x5 ^ 0xF) << 4
+m.cmos[MC] = 0x5 | (0x5 ^ 0xF) << 4
 postend(m)
 check(v.sr[0x1F] == 0x62, "end of POST: 60.9 MHz written, bits 7-6 kept (SR1F=%02X)" % v.sr[0x1F])
 m = setup()
 v = cirrus(m, unlocked=False)
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x2 | (0x2 ^ 0xF) << 4
+m.cmos[MC] = 0x2 | (0x2 ^ 0xF) << 4
 postend(m)
 check(v.sr[0x1F] == 0x1F and v.sr[0x06] == 0x0F, "locked extensions: unlocked to write SR1F, locked again")
 m = setup()
 v = cirrus(m)
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x22                                         # not a valid choice byte
+m.cmos[MC] = 0x22                                         # not a valid choice byte
 postend(m)
-check(v.sr[0x1F] == 0x1C and not [w for w in v.sr_writes if w[0] == 0x1F], "damaged CMOS 53h: the clock is left alone")
+check(v.sr[0x1F] == 0x1C and not [w for w in v.sr_writes if w[0] == 0x1F], "damaged CMOS 60h: the clock is left alone")
 m = setup()
 v = cirrus(m)
-m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4                       # without a chipset block: not used
+m.cmos[MC] = 0x3 | (0x3 ^ 0xF) << 4                       # without a chipset block: not used
 postend(m)
-check(v.sr[0x1F] == 0x1C, "CMOS 53h alone (no saved chipset block): not applied")
+check(v.sr[0x1F] == 0x1C, "CMOS 60h alone (no saved chipset block): not applied")
 m = setup()
 v = cirrus(m)
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+m.cmos[MC] = 0x3 | (0x3 ^ 0xF) << 4
 m.write(0x417, bytes([0x02]))
 postend(m)
 check(v.sr[0x1F] == 0x1C, "Shift held: the video clock is skipped too")
 m = setup()
 v = cirrus(m)
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+m.cmos[MC] = 0x3 | (0x3 ^ 0xF) << 4
 run_tools(m, [key("9"), key("d")])
-check(m.cmos[0x53] == 0 and saved(m) is None, "page: D clears the video clock with the rest")
+check(m.cmos[MC] == 0 and saved(m) is None, "page: D clears the video clock with the rest")
 m = setup()
 run_tools(m, [key("9")])
 check("no Cirrus chip" in m.screen_text().splitlines()[13], "no Cirrus chip: the row says so")
 save(m, 0, 0, 0x0A)
-m.cmos[0x53] = 0x3 | (0x3 ^ 0xF) << 4
+m.cmos[MC] = 0x3 | (0x3 ^ 0xF) << 4
 postend(m)
 check(m.cmos[0x52] == ord("P"), "no Cirrus chip: the rest of the settings still apply")
 
@@ -236,6 +241,29 @@ for mode in (0x03, 0x13, 0x5F, 0x03):
 m.int_call(0x10, ax=0x4F02, bx=0x101, max_insns=50_000_000)
 check(starts == [(0x1F, 0x1C)] and v.sr[0x1F] == 0x20,
       "VGA BIOS: sets 1Ch (50.1 MHz) once at start-up; mode sets and VESA modes keep a later value")
+
+m = setup()
+v = cirrus(m)
+run_tools(m, [key("9")] + [DOWN] * 6 + [RIGHT] * 5 + [key("s")])
+m.cmos[0x53] = 0xA5
+m.run_until(0xF000, 0x40EE, 0xF000, 0x4108, max_insns=5_000_000)    # NCR's POST, keyboard input port bit 5 low
+check(m.cmos[0x53] == 0 and mclk_saved(m) == 5, "NCR's POST clears CMOS 53h (F000:40FE); the clock in 60h stays")
+
+m = setup()
+v = cirrus(m, mclk=0x20)
+run_tools(m, [key("9"), key("v")], max_insns=400_000_000)
+t = m.screen_text()
+rows = t.splitlines()[12:18]
+check("Video memory speed test" in t and len(rows) == 6 and all(r.count("KB/s") == 2 for r in rows),
+      "speed test: write and read speed for each of the six clocks")
+check("57.3 MHz" in rows[3] and "< before the test" in rows[3] and "< before" not in "".join(rows[:3] + rows[4:]),
+      "speed test: the clock in use before the test is marked")
+clk = [w[1] & 0x3F for w in v.sr_writes if w[0] == 0x1F]
+check(clk == [0x1C, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x20] and v.sr[0x1F] == 0x20,
+      "speed test: each clock in turn, then the clock as it was (%s)" % clk)
+m = setup()
+run_tools(m, [key("9"), key("v")])
+check("No Cirrus video chip answers." in m.screen_text(), "speed test: no Cirrus chip, nothing measured")
 
 # ---------------------------------------------------------------- the chip named
 for cid, name, mem, mtxt in ((0x90, "CL-GD5426", 2, "1 MB"), (0x94, "CL-GD5424", 1, "512 KB"),

@@ -4,6 +4,11 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.8 (2026-10-19)
+
+- Fix: the **video memory clock was not kept**. 1.5 stored it in CMOS 53h, but NCR's POST clears 53h on every boot (F000:40FE, when the keyboard controller's input port bit 5 is low, as it is on this board). It is now in CMOS 60h, which nothing else uses. A clock saved with 1.5 to 1.7 is lost: set it again and save.
+- New: **Video memory speed test**, V on Tools → 9. It writes and reads 16 KB of video memory at each of the six clocks, timed with the PIT, and shows KB/s for each. The clock goes back to its value from before the test, and nothing is saved. Same numbers at every clock mean the bus is the limit.
+
 ## 1.7 (2026-10-19)
 
 - Memory test fix: once more than six errors had been logged, each new entry showed the wrong last four hex digits of its address (the log's scroll overwrote them). This affected data errors since the first version, and parity errors in 1.6.

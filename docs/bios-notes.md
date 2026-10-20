@@ -36,7 +36,8 @@ The VGA BIOS is Cirrus Logic's CL-GD5422/5424/5426/5428 BIOS v1.30 (Quadtel-base
 - **Extended registers.** They answer only while sequencer register SR6 holds 12h. The BIOS leaves them unlocked, and its own check (E000:0FE6) reads SR6 back.
 - **Chip ID.** CRTC register 27h bits 7–2: 23h = GD5422, 25h = GD5424, 24h = GD5426, 26h = GD5428 (E000:0FF6 tells 5422 and 5424 apart from the rest, and E000:0C5C checks for 98h = GD5428). 22h (GD5420) and 27h (GD5429) come from Cirrus's register documentation, not this BIOS.
 - **Video memory.** SR0A bits 4–3, set by the BIOS: 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB (E000:147A, also behind INT 10h AH=12h BL=85h).
-- **Memory clock.** SR1F bits 5–0, MCLK = value × 14.31818 MHz / 8. The BIOS writes 1Ch (50.1 MHz) once while it starts, for every chip ID, and never on a mode change or VESA mode set. `tools_rom` can set it at the end of POST (CMOS 53h, see the chipset settings).
+- **Memory clock.** SR1F bits 5–0, MCLK = value × 14.31818 MHz / 8. The BIOS writes 1Ch (50.1 MHz) once while it starts, for every chip ID, and never on a mode change or VESA mode set. `tools_rom` can set it at the end of POST (CMOS 60h, see the chipset settings). 1.5–1.7 used CMOS 53h, which NCR's POST clears at F000:40FE whenever the keyboard controller's input port bit 5 reads low (it does on this board), so the setting never survived a restart.
+- **Speed test** (Tools 9 → V). For each clock it writes 16 KB with `rep stosd` and reads it with `rep lodsd`, past the visible text page (video segment + 100h), timed with PIT channel 2 in mode 0, best of four with interrupts off. KB/s = 16 × 1193182 / counts. The clock is set back to its earlier value afterwards.
 
 ## POST
 

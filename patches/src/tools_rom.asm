@@ -3910,13 +3910,15 @@ s_pnran:    db "Cards configured again with these settings.", 0
 ;   52h = fail-safe: 'P' while a boot with the settings has not reached INT 19h
 ;         or Tools, 'F' after such a boot failed (settings then stay off until
 ;         they are saved again). Holding Shift at the end of POST skips them.
-;   53h = video memory clock: choice | (choice XOR 0Fh) << 4 (see mclk_apply),
-;         used only together with a valid 4Eh-51h block.
+;   60h = video memory clock: choice | (choice XOR 0Fh) << 4 (see mclk_apply),
+;         used only together with a valid 4Eh-51h block. (Not 53h, as in 1.5:
+;         NCR's POST clears 53h at F000:40FE when the keyboard controller's
+;         input port bit 5 is low, which it is on this board.)
 
 CS_INDEX    equ 0x4E
 CS_SIG      equ 'C'
 CS_FLAG     equ 0x52
-MC_CMOS     equ 0x53
+MC_CMOS     equ 0x60
 
 ; V_CSTAT: 0 NCR defaults, 1 applied, 2 skipped (last boot failed), 3 skipped (Shift)
 cs_read:                            ; saved settings -> V_CS81/82/91/MC. CF=1 if none (V_* = NCR's)
@@ -4237,6 +4239,206 @@ mclk_now:                           ; print the video memory clock as it is now
     SAY "no Cirrus chip"
     ret
 
+; Tools 9 -> V: video memory speed at each clock. 16 KB past the visible
+; page is written (rep stosd) and read (rep lodsd), timed with PIT channel 2,
+; best of four; the clock goes back to its value from before the test.
+page_vtest:
+    mov si, t_vtest
+    mov bx, h_vtest
+    call frame
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dx, 0x0503
+    call goto_rc
+    SAY "Writes and reads 16 KB of video memory at each video memory clock, best", 3
+    SAY "of four tries. The clock goes back to how it was afterwards; nothing is", 3
+    SAY "saved. If the numbers hardly change, the bus is the limit and a faster", 3
+    SAY "clock gains little. A hang or glitches at a clock mean it is too fast.", 3
+    call vga_unlock
+    jnc .cirrus
+    mov dx, 0x0B05
+    call goto_rc
+    SAY 1, A_BAD, "No Cirrus video chip answers."
+    jmp .end
+.cirrus:
+    push ax                         ; AH = SR6 as it was
+    mov al, 0x1F
+    call sr_read
+    mov [gs:V_TMP], al              ; SR1F as it was
+    mov byte [gs:V_ATTR], A_DIM
+    mov dx, 0x0A05
+    call goto_rc
+    SAY "Video memory clock"
+    mov dl, 32
+    call goto_rc
+    SAY "Write"
+    mov dl, 47
+    call goto_rc
+    SAY "Read"
+    xor bx, bx
+.clk:
+    mov dh, bl
+    add dh, 12
+    mov dl, 5
+    call goto_rc
+    mov byte [gs:V_ATTR], A_LABEL
+    push bx
+    mov al, bl
+    mov si, cso_mclk
+    call cs_name
+    pop bx
+    mov al, [cs:mc_vals + bx]
+    test al, al
+    jnz .set
+    mov al, 0x1C                    ; the VGA BIOS's 50.1 MHz
+.set:
+    mov cl, al                      ; this row's clock value
+    mov ah, [gs:V_TMP]
+    and ah, 0xC0
+    or ah, al
+    mov al, 0x1F
+    call sr_write
+    push cx
+    mov cx, 20                      ; let the clock settle
+    call delay_ms
+    call vtest_one
+    pop cx
+    mov [gs:V_PAT], edx             ; read speed
+    mov byte [gs:V_ATTR], A_VALUE
+    mov dh, bl
+    add dh, 12
+    mov dl, 32
+    call goto_rc
+    call putdec
+    SAY " KB/s"
+    mov dl, 47
+    call goto_rc
+    mov eax, [gs:V_PAT]
+    call putdec
+    SAY " KB/s"
+    mov al, [gs:V_TMP]
+    and al, 0x3F
+    cmp al, cl
+    jne .next
+    mov dl, 61
+    call goto_rc
+    SAY 1, A_TITLE, "< before the test"
+.next:
+    inc bx
+    cmp bx, MC_N
+    jb .clk
+    mov ah, [gs:V_TMP]              ; the clock as it was
+    mov al, 0x1F
+    call sr_write
+    pop ax
+    call vga_relock
+.end:
+    mov dx, 0x1503
+    call goto_rc
+    SAY 1, A_TITLE, "Done. Press any key."
+    call getkey
+    ret
+
+vtest_one:                          ; EAX = write KB/s, EDX = read KB/s
+    push bx
+    push cx
+    push si
+    push di
+    push bp
+    push ds
+    push es
+    mov ax, [gs:V_VSEG]
+    add ax, 0x100                   ; past the visible page
+    mov es, ax
+    mov dx, 0xFFFF                  ; best write time, in PIT counts
+    mov bp, 0xFFFF                  ; best read time
+    mov si, 4
+.try:
+    push si
+    pushf
+    cli
+    call pit_start
+    xor di, di
+    mov cx, 4096
+    mov eax, 0x55AA33CC
+    rep stosd
+    call pit_stop
+    cmp bx, dx
+    jae .w
+    mov dx, bx
+.w:
+    call pit_start
+    push es
+    pop ds
+    xor si, si
+    mov cx, 4096
+    rep lodsd
+    push cs
+    pop ds
+    call pit_stop
+    cmp bx, bp
+    jae .r
+    mov bp, bx
+.r:
+    popf
+    pop si
+    dec si
+    jnz .try
+    movzx ebx, dx
+    call .rate
+    push eax
+    movzx ebx, bp
+    call .rate
+    mov edx, eax
+    pop eax
+    pop es
+    pop ds
+    pop bp
+    pop di
+    pop si
+    pop cx
+    pop bx
+    ret
+.rate:                              ; EBX counts -> EAX = 16 KB x 1193182 / counts
+    test ebx, ebx
+    jnz .div
+    inc ebx
+.div:
+    mov eax, 16 * 1193182
+    xor edx, edx
+    div ebx
+    ret
+
+pit_start:                          ; PIT channel 2 counting down from FFFFh (mode 0)
+    in al, 0x61
+    and al, 0xFC
+    out 0x61, al
+    mov al, 0xB0
+    out 0x43, al
+    mov al, 0xFF
+    out 0x42, al
+    out 0x42, al
+    in al, 0x61
+    or al, 1                        ; gate on
+    out 0x61, al
+    ret
+
+pit_stop:                           ; BX = counts since pit_start (1.193182 MHz)
+    mov al, 0x80                    ; latch channel 2
+    out 0x43, al
+    in al, 0x42
+    mov ah, al
+    in al, 0x42
+    xchg al, ah
+    mov bx, 0xFFFF
+    sub bx, ax
+    in al, 0x61
+    and al, 0xFC
+    out 0x61, al
+    ret
+
+t_vtest:    db "Video memory speed test", 0
+h_vtest:    db "Any key Back", 0
+
 vga_name:                           ; print "Cirrus CL-GD5426, 1 MB"; CF=1 (nothing printed) if none
     call vga_unlock
     jc .x
@@ -4518,6 +4720,8 @@ page_chipset:                       ; Tools 9: the settings; R shows the raw reg
     je .def
     cmp al, 'r'
     je .regs
+    cmp al, 'v'
+    je .vtest
     jmp short .key
 .up:
     cmp byte [gs:V_CSEL], 0
@@ -4554,12 +4758,16 @@ page_chipset:                       ; Tools 9: the settings; R shows the raw reg
     call page_chipregs
     mov si, s_none
     jmp .draw
+.vtest:
+    call page_vtest
+    mov si, s_none
+    jmp .draw
 .x:
     clc
     ret
 
 t_cset:     db "Chipset settings", 0
-h_cset:     db 0x18, 0x19, " Select  ", 0x1B, 0x1A, " Change  S Save  D NCR defaults  R Registers  Esc Back", 0
+h_cset:     db 0x18, 0x19, " Select  ", 0x1B, 0x1A, " Change  S Save  D Defaults  R Registers  V Video test  Esc Back", 0
 s_cssaved:  db "Saved. Restart (Ctrl-Alt-Del) for POST to apply them.", 0
 s_csdef:    db "Saved: NCR's own values are used from the next boot.", 0
 
