@@ -4,10 +4,15 @@ Versions of the NCR 3230 BIOS **Enhanced Edition**. The NCR BIOS underneath stay
 
 The version is set in one place, `patches/src/version.inc`. It shows on the boot screen, the end-of-POST summary, Setup's title line and Tools → System information. Bump it for every build that gets burned, add an entry here, and tag the commit (`v1.0`, `v1.1`, …).
 
+## 1.11 (2026-10-20)
+
+- Fix, the real cause of lost settings: **NCR's password check erased them at the end of every boot.** At the end of POST (F000:481B → 04DA) NCR checks password slot 0. With no password set, the slot is empty and the check fails, so NCR's reset (F000:05D1) zeroes CMOS 34h, 36h–3Eh and 49h–71h. That range holds the saved boot order, the chipset settings, the video clock and the Plug and Play settings. It ran after Tools and after the settings were applied, so a restart straight from Tools seemed to keep them, while booting to DOS lost them. The new `keep_cmos` patch (one byte, F000:05EF) stops that loop after 49h. NCR's own bytes (34h, 36h–3Eh and the password-prompt flag in 49h) are still cleared.
+- This also affected the saved boot order (since 1.0) and the Plug and Play settings (since 1.4). They now persist too.
+
 ## 1.10 (2026-10-20)
 
 - Fix: after Ctrl-Alt-Del the chipset kept the timing from the boot before, because NCR's POST skips its chipset table on a warm boot (F000:21F4). That also meant a too-fast setting stayed in the chip when the fail-safe or Shift skipped it. When the saved settings are not applied, the end of POST now writes NCR's values back into 81h, 82h and 91h.
-- CMOS accesses wait between the index (port 70h) and the data (port 71h), as NCR's own code does (two writes to port EBh). Without the wait, the real-time clock chip missed writes: on real hardware the chipset and video clock settings did not survive a restart before this change, and do with it (confirmed by restart and power cycle).
+- CMOS accesses wait between the index (port 70h) and the data (port 71h), as NCR's own code does (two writes to port EBh). This matches NCR's own code. It was first thought to fix the lost settings, but those came from NCR's password check (see 1.11).
 - S on Tools → 9 reads the saved block back. If CMOS did not keep it, the page says "NOT saved" instead of "Saved".
 
 ## 1.9 (2026-10-19)

@@ -217,5 +217,32 @@ check(all(c[i] == 0 for i in range(0x10, 0x48) if i not in (0x10, 0x12, 0x15, 0x
 m = ide(IMPROVED, ctype=0x00, master=Atapi())
 check(m.cmds == [] and m.mem_byte(0x475) == 0, "improved: C=0 still never touches the IDE bus")
 
+
+# ---------------------------------------------------------------- keep_cmos: NCR's end-of-POST password check
+def password_check(image):
+    """Run F000:04DA (called at F000:481B at the end of every POST) with CMOS 34h-71h all 5Ah."""
+    m = Machine(image)
+    m.install_rom_vectors()
+    m.video_init(3)
+    for i in range(0x34, 0x72):
+        m.cmos[i] = 0x5A
+    m.cmos[0x53] = 0x00                             # slot 0 empty: no password set
+    m.cmos[0x0E] = 0x00
+    try:
+        m.near_call(0xF000, 0x04DA, max_insns=20_000_000)
+    except StopEmu:
+        pass
+    return m.cmos
+
+
+c = password_check(ORIGINAL)
+check(c[0x34] == 0 and not any(c[0x36:0x3F]) and not any(c[0x49:0x72]),
+      "original: with no password set, the end of POST zeroes 34h, 36h-3Eh and 49h-71h")
+c = password_check(IMPROVED)
+check(c[0x34] == 0 and not any(c[0x36:0x3F]) and c[0x49] == 0 and c[0x35] == 0x5A and c[0x3F] == 0x5A,
+      "improved: NCR's own bytes (34h, 36h-3Eh, 49h) are still cleared")
+check(all(v == 0x5A for v in c[0x4A:0x53]) and all(v == 0x5A for v in c[0x54:0x72]),
+      "improved: 4Ah-71h (boot order, chipset, PnP, video clock) are kept")
+
 print("\n%d failed" % len(failed) if failed else "\nall passed")
 sys.exit(1 if failed else 0)

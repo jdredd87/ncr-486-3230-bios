@@ -1,0 +1,17 @@
+; Keep CMOS 4Ah-71h: NCR's password reset clears only its own bytes.
+;
+; At the end of every POST (F000:481B -> 04DA) NCR checks password slot 0
+; (CMOS 4Ah-53h, see F000:0775). With no password set the slot is empty and
+; the check "fails", so F000:05D1 resets the password state: it zeroes CMOS
+; 34h, 36h-3Eh and 49h-71h. Those last are the four 10-byte password slots,
+; which are meaningless without a password, but the Enhanced Edition keeps its
+; boot order (4Ah-4Dh), chipset and video settings (4Eh-52h, 60h) and Plug and
+; Play settings (54h-5Fh) there. So every boot erased them once POST ended.
+;
+; The loop at F000:05E6 runs AL from 49h up to 72h. Stop it after 49h: the
+; flags byte (bit 7 = password prompt on) is still cleared, so no password
+; prompt can come from data in the slots, and 34h and 36h-3Eh are cleared as
+; before. Setting an NCR password would still overwrite these settings.
+
+;@ F000:05EF max=2
+    cmp al, 0x4A
