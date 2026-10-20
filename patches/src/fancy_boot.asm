@@ -56,6 +56,8 @@ splash:
     cli
     mov al, FLAG_INDEX
     out 0x70, al
+    out 0xEB, al
+    out 0xEB, al
     in al, 0x71
     popf
     cmp al, FLAG_OFF
@@ -352,15 +354,16 @@ f2toggle:
     call savecur
     call readflag
     cmp al, FLAG_OFF
-    mov al, FLAG_OFF
+    mov ah, FLAG_OFF
     jne .write
-    xor al, al
+    xor ah, ah
 .write:
-    mov ah, al
     pushf
     cli
     mov al, FLAG_INDEX
     out 0x70, al
+    out 0xEB, al                ; as NCR's code: let the clock chip settle
+    out 0xEB, al
     mov al, ah
     out 0x71, al
     popf
@@ -419,8 +422,7 @@ putsat:                         ; CS:SI at row DH, column DL in colour BL
     or al, al
     jz .end
     push dx
-    mov ah, 2
-    mov bh, 0
+    mov ah, 2                   ; BH = 0 from getattr (INT 10h keeps it)
     int 0x10
     mov ah, 9
     mov cx, 1

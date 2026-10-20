@@ -157,6 +157,37 @@ m.cmos[0x50] ^= 0x01                                      # damaged: the check b
 postend(m)
 check(m.chipset[0x91] == 0x0A, "damaged saved settings are ignored")
 
+m = setup()                                                 # Ctrl-Alt-Del: POST skipped its table
+m.chipset[0x81], m.chipset[0x82], m.chipset[0x91] = 0x32, 0x57, 0x0F
+postend(m)
+check(m.chipset[0x81] == 0x31 and m.chipset[0x82] == 0x54 and m.chipset[0x91] == 0x0A,
+      "no saved settings: values left from the boot before go back to POST's table")
+m = setup()
+save(m, 2, 1, 0x8F)
+m.cmos[0x52] = ord("P")                                     # that boot hung, then Ctrl-Alt-Del
+m.chipset[0x81], m.chipset[0x82], m.chipset[0x91] = 0x32, 0x55, 0x8F
+postend(m)
+check(m.chipset[0x81] == 0x31 and m.chipset[0x91] == 0x0A and m.cmos[0x52] == ord("F"),
+      "fail-safe after Ctrl-Alt-Del: the too-fast values are taken out of the chip")
+m = setup()
+run_tools(m, [key("9"), RIGHT, key("s")])
+check("Saved. Restart" in m.screen_text(), "page: S reads the block back and says it is saved")
+m = setup()
+orig_out = m.port_out
+
+
+def lossy(port, size, value):                               # a CMOS that loses writes to 50h
+    if port == 0x71 and m.cmos_index & 0x7F == 0x50:
+        return
+    orig_out(port, size, value)
+
+
+m.port_out = lossy
+run_tools(m, [key("9"), RIGHT, key("s")])
+t = m.screen_text()
+check("NOT saved: CMOS 4Eh-51h/60h read back wrong" in t and "÷ 4" in t.splitlines()[7],
+      "page: a save that does not read back is reported, the choice stays on screen")
+
 # ---------------------------------------------------------------- video memory clock (Cirrus GD542x)
 def cirrus(m, **kw):
     m.vga = CirrusVga(**kw)

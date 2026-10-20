@@ -170,6 +170,8 @@ g_postend:                          ; replaces the end-of-POST beep
     cli
     mov al, FLAG_INDEX
     out 0x70, al
+    out 0xEB, al
+    out 0xEB, al
     in al, 0x71
     popf
     cmp al, 0xA5
@@ -348,7 +350,7 @@ V_CSTAT     equ 0x184               ; chipset settings this boot (see chip_apply
 V_CS81      equ 0x185               ; chipset settings: 81h bits 2-0, 82h bits 1-0, 91h
 V_CS82      equ 0x186
 V_CS91      equ 0x187
-V_CSMC      equ 0x188               ; video memory clock choice (0 = the VGA BIOS's), CMOS 53h
+V_CSMC      equ 0x188               ; video memory clock choice (0 = the VGA BIOS's), CMOS 60h
 V_CSEL      equ 0x189
 V_PHI       equ 0x18C               ; (low one at V_PLO)
 V_PNF       equ 0x190               ; ISA PnP settings (CMOS 55h-5Eh): bit 0 = off
@@ -761,6 +763,8 @@ cmos_read:                          ; AL = register -> AL = value
     cli
     or al, 0x80
     out 0x70, al
+    out 0xEB, al
+    out 0xEB, al
     in al, 0x71
     popf
     ret
@@ -3925,17 +3929,7 @@ cs_read:                            ; saved settings -> V_CS81/82/91/MC. CF=1 if
     push ax
     push cx
     mov byte [gs:V_CSMC], 0
-    mov al, 0x81
-    call chip_post
-    and al, 0x07
-    mov [gs:V_CS81], al
-    mov al, 0x82
-    call chip_post
-    and al, 0x03
-    mov [gs:V_CS82], al
-    mov al, 0x91
-    call chip_post
-    mov [gs:V_CS91], al
+    call cs_ncr
     mov al, CS_INDEX
     call cmos_read
     cmp al, CS_SIG
@@ -4072,13 +4066,37 @@ chip_apply:                         ; end of POST: saved settings into the chips
     call cmos_write
 .failed:
     mov byte [gs:V_CSTAT], 2
-.vga:                               ; not applied: the video clock still goes back to
-    mov byte [gs:V_CSMC], 0         ; 50.1 MHz, which the VGA BIOS skips on a warm boot
-    jmp mclk_apply
+.vga:                               ; not applied: NCR's values and the VGA BIOS's
+    call cs_ncr                     ; 50.1 MHz go back in. After Ctrl-Alt-Del POST
+    call chip_regs                  ; skips its chipset table (F000:21F4) and the
+    mov byte [gs:V_CSMC], 0         ; VGA BIOS the clock, so the chip would keep
+    jmp mclk_apply                  ; what the boot before applied
 .go:
     mov al, CS_FLAG
     mov ah, 'P'
     call cmos_write
+    call chip_regs
+    call mclk_apply
+    mov byte [gs:V_CSTAT], 1
+    ret
+
+cs_ncr:                             ; V_CS81/82/91 = POST's table values
+    push ax
+    mov al, 0x81
+    call chip_post
+    and al, 0x07
+    mov [gs:V_CS81], al
+    mov al, 0x82
+    call chip_post
+    and al, 0x03
+    mov [gs:V_CS82], al
+    mov al, 0x91
+    call chip_post
+    mov [gs:V_CS91], al
+    pop ax
+    ret
+
+chip_regs:                          ; V_CS81/82/91 into the chipset
     mov al, 0x81
     call chip_read
     and al, 0xF8
@@ -4095,10 +4113,7 @@ chip_apply:                         ; end of POST: saved settings into the chips
     call chip_write
     mov ah, [gs:V_CS91]
     mov al, 0x91
-    call chip_write
-    call mclk_apply
-    mov byte [gs:V_CSTAT], 1
-    ret
+    jmp chip_write
 
 chip_write:                         ; chipset register AL = AH
     pushf
@@ -4761,8 +4776,16 @@ page_chipset:                       ; Tools 9: the settings; R shows the raw reg
     mov si, s_none
     jmp .draw
 .save:
+    mov eax, [gs:V_CS81]            ; V_CS81, 82, 91 and MC
     call cs_write
+    call cs_read                    ; read back: did CMOS keep it?
     mov si, s_cssaved
+    jc .bad
+    cmp eax, [gs:V_CS81]
+    je .draw
+.bad:
+    mov [gs:V_CS81], eax
+    mov si, s_csbad
     jmp .draw
 .def:
     call cs_clear
@@ -4785,6 +4808,7 @@ t_cset:     db "Chipset settings", 0
 h_cset:     db 0x18, 0x19, " Select  ", 0x1B, 0x1A, " Change  S Save  D Defaults  R Registers  V Video test  Esc Back", 0
 s_cssaved:  db "Saved. Restart (Ctrl-Alt-Del) for POST to apply them.", 0
 s_csdef:    db "Saved: NCR's own values are used from the next boot.", 0
+s_csbad:    db "NOT saved: CMOS 4Eh-51h/60h read back wrong. Photograph Tools 5.", 0
 
 ; ------------------------------------------------------------------ chipset registers
 ; Read-only view of the chipset's configuration registers 80h-9Fh (index port
@@ -5387,13 +5411,19 @@ getnum:                             ; typed number 1..BX at the cursor -> AX. CF
     pop cx
     ret
 
+; NCR's own CMOS code waits after each port 70h/71h access (two writes to
+; port EBh); without that the real-time clock chip can miss a write.
 cmos_write:                         ; CMOS[AL] = AH
     pushf
     cli
     or al, 0x80
     out 0x70, al
+    out 0xEB, al
+    out 0xEB, al
     mov al, ah
     out 0x71, al
+    out 0xEB, al
+    out 0xEB, al
     popf
     ret
 
